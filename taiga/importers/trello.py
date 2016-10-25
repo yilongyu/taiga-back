@@ -4,6 +4,7 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 from django.contrib.contenttypes.models import ContentType
 import requests
+import webcolors
 
 from django.template.defaultfilters import slugify
 from taiga.projects.models import Project, ProjectTemplate
@@ -27,7 +28,7 @@ class TrelloImporter:
 
     def import_project(self, project_id):
         board = self._client.get_board(project_id)
-        # labels = board.list_labels(limit=1000)
+        labels = board.get_labels(limit=1000)
         statuses = board.all_lists()
         kanban = ProjectTemplate.objects.get(slug="kanban")
         kanban.us_statuses = []
@@ -61,10 +62,20 @@ class TrelloImporter:
             "order": 2,
         })
         kanban.default_options["task_status"] = "Incomplete"
+        tags_colors = []
+        for label in labels:
+            name = label.name
+            if not name:
+                name = label.color
+            name = name.lower()
+            color = self._ensure_hex_color(label.color)
+            tags_colors.append([name, color])
+
         project = Project.objects.create(
             name=board.name,
             description=board.description,
             owner=self._user,
+            tags_colors=tags_colors,
             creation_template=kanban
         )
         return project
@@ -75,6 +86,15 @@ class TrelloImporter:
         cards = board.all_cards()
         for card in cards:
             card.fetch()
+
+            tags = []
+            for tag in card.labels:
+                name = tag.name
+                if not name:
+                    name = tag.color
+                name = name.lower()
+                tags.append(name)
+
             us = UserStory.objects.create(
                 project=project,
                 owner=self._user,
@@ -84,6 +104,7 @@ class TrelloImporter:
                 backlog_order=card.pos,
                 subject=card.name,
                 description=card.description,
+                tags=tags
             )
             self._import_attachments(us, card)
             break
@@ -162,3 +183,11 @@ class TrelloImporter:
                                 verifier=oauth_verifier)
         access_token = session.fetch_access_token(access_token_url)
         return access_token
+
+    def _ensure_hex_color(self, color):
+        if color is None:
+            return None
+        try:
+            return webcolors.name_to_hex(color)
+        except ValueError:
+            return color
