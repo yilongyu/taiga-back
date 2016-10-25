@@ -6,6 +6,7 @@
 - Contact with the project: if the projects have this module enabled Taiga users can contact them.
 - Memberships API endpoints now allows using usernames and emails instead of using only emails
 - Contacts API search by free text: consulting the username, full name and email
+- Duplicate project: new endpoint in the projects API that allows create a new project based on the structure of another (status, tags, colors, default values...)
 
 ## 3.0.0 Stellaria Borealis (2016-10-02)
 
