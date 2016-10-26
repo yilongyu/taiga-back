@@ -11,10 +11,15 @@ from taiga.projects.models import Project, ProjectTemplate
 from taiga.projects.userstories.models import UserStory
 from taiga.projects.tasks.models import Task
 from taiga.projects.attachments.models import Attachment
+from taiga.projects.history.services import take_snapshot
+from taiga.projects.history.models import HistoryEntry
+from taiga.projects.custom_attributes.models import UserStoryCustomAttribute, UserStoryCustomAttributesValues
+from taiga.users.models import User
 
 
 class TrelloImporter:
-    def __init__(self, user, token):
+    def __init__(self, user, token, import_closed_data=False):
+        self._import_closed_data = import_closed_data
         self._user = user
         self._client = TrelloClient(
             api_key=settings.TRELLO_API_KEY,
@@ -34,11 +39,13 @@ class TrelloImporter:
         kanban.us_statuses = []
         counter = 0
         for us_status in statuses:
+            if us_status.closed and not self._import_closed_data:
+                continue
             counter += 1
             kanban.us_statuses.append({
                 "name": us_status.name,
                 "slug": slugify(us_status.name),
-                "is_closed": us_status.closed,
+                "is_closed": False,
                 "is_archived": False,
                 "color": "#999999",
                 "wip_limit": None,
@@ -78,13 +85,28 @@ class TrelloImporter:
             tags_colors=tags_colors,
             creation_template=kanban
         )
+        UserStoryCustomAttribute.objects.create(
+            name="Due",
+            description="Due date",
+            type="date",
+            order=1,
+            project=project
+        )
         return project
 
     def import_user_stories(self, project, project_id):
         board = self._client.get_board(project_id)
-        statuses = {s.id: s.name for s in board.all_lists()}
+        statuses = {s.id: s for s in board.all_lists()}
         cards = board.all_cards()
+
+        has_due_date = False
+        due_date_field = project.userstorycustomattributes.first()
+
         for card in cards:
+            if card.closed and not self._import_closed_data:
+                continue
+            if statuses[card.list_id].closed and not self._import_closed_data:
+                continue
             card.fetch()
 
             tags = []
@@ -98,7 +120,7 @@ class TrelloImporter:
             us = UserStory.objects.create(
                 project=project,
                 owner=self._user,
-                status=project.us_statuses.get(name=statuses[card.list_id]),
+                status=project.us_statuses.get(name=statuses[card.list_id].name),
                 kanban_order=card.pos,
                 sprint_order=card.pos,
                 backlog_order=card.pos,
@@ -106,18 +128,22 @@ class TrelloImporter:
                 description=card.description,
                 tags=tags
             )
+            UserStory.objects.filter(id=us.id).update(
+                modified_date=card.date_last_activity,
+                created_date=card.date_last_activity
+            )
+
+            if card.due:
+                has_due_date = True
+                us.custom_attributes_values.attributes_values = {due_date_field.id: card.due}
+                us.custom_attributes_values.save()
             self._import_attachments(us, card)
-            break
-            # self._import_tasks(us, card)
+            self._import_tasks(us, card)
+            take_snapshot(us, comment="", user=None, delete=False)
+            self._import_comments(us, card)
 
-    def import_issues(self, project, project_id):
-        pass
-
-    def import_wiki_pages(self, project, project_id):
-        pass
-
-    def import_epics(self, project, project_id):
-        pass
+        if not has_due_date:
+            due_date_field.delete()
 
     def _import_tasks(self, us, card):
         for checklist in card.fetch_checklists():
@@ -145,7 +171,23 @@ class TrelloImporter:
                 is_deprecated=False,
             )
             att.attached_file.save(attachment['name'], ContentFile(data.content), save=True)
-            print("IMPORTING ATTACHMENT")
+
+            UserStory.objects.filter(id=us.id, created_date__gt=attachment['date']).update(
+                created_date=attachment['date']
+            )
+
+    def _import_comments(self, us, card):
+        for comment in card.comments:
+            snapshot = take_snapshot(
+                us,
+                comment=comment['data']['text'],
+                user=User(full_name=comment['memberCreator']['fullName']),
+                delete=False
+            )
+            HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment['date'])
+            UserStory.objects.filter(id=us.id, created_date__gt=comment['date']).update(
+                created_date=comment['date']
+            )
 
     @classmethod
     def get_auth_url(cls):
