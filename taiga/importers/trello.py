@@ -41,6 +41,9 @@ class TrelloImporter:
         for us_status in statuses:
             if us_status.closed and not self._import_closed_data:
                 continue
+            if counter == 0:
+                kanban.default_options["us_status"] = us_status.name
+
             counter += 1
             kanban.us_statuses.append({
                 "name": us_status.name,
@@ -51,7 +54,6 @@ class TrelloImporter:
                 "wip_limit": None,
                 "order": counter,
             })
-        kanban.default_options["us_status"] = statuses[0].name
 
         kanban.task_statuses = []
         kanban.task_statuses.append({
@@ -177,11 +179,11 @@ class TrelloImporter:
             )
 
     def _import_comments(self, us, card):
-        for comment in card.comments:
+        for comment in card.fetch_comments(limit=1000):
             snapshot = take_snapshot(
                 us,
                 comment=comment['data']['text'],
-                user=User(full_name=comment['memberCreator']['fullName']),
+                user=User(full_name=comment.get('memberCreator', {}).get('fullName', None)),
                 delete=False
             )
             HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment['date'])
