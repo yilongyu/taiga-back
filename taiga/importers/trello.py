@@ -13,7 +13,7 @@ from taiga.projects.tasks.models import Task
 from taiga.projects.attachments.models import Attachment
 from taiga.projects.history.services import take_snapshot
 from taiga.projects.history.models import HistoryEntry
-from taiga.projects.custom_attributes.models import UserStoryCustomAttribute, UserStoryCustomAttributesValues
+from taiga.projects.custom_attributes.models import UserStoryCustomAttribute
 from taiga.users.models import User
 
 
