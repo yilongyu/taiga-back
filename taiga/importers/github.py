@@ -1,21 +1,14 @@
 from requests_oauthlib import OAuth1Session
 from django.conf import settings
-from django.core.files.base import ContentFile
-from django.contrib.contenttypes.models import ContentType
-import requests
-import webcolors
 from github import Github
 from itertools import chain
 
-from django.template.defaultfilters import slugify
-from taiga.projects.models import Project, ProjectTemplate
+from taiga.projects.models import Project, ProjectTemplate, Membership
 from taiga.projects.userstories.models import UserStory
-from taiga.projects.tasks.models import Task
-from taiga.projects.attachments.models import Attachment
+from taiga.projects.issues.models import Issue
 from taiga.projects.history.services import take_snapshot
 from taiga.projects.history.models import HistoryEntry
-from taiga.projects.custom_attributes.models import UserStoryCustomAttribute
-from taiga.users.models import User
+from taiga.users.models import User, AuthData
 
 
 class GithubImporter:
@@ -28,38 +21,61 @@ class GithubImporter:
         user = self._client.get_user("jespino")
         return [{"id": repo.id, "name": repo.name} for repo in user.get_repos()]
 
-    def import_project(self, project_id):
+    def import_project(self, project_id, options={"template": "kanban", "type": "user_stories"}):
         repo = self._client.get_repo(project_id)
-        kanban = ProjectTemplate.objects.get(slug="kanban")
+        project_template = ProjectTemplate.objects.get(slug=options['template'])
 
-        kanban.us_statuses = []
-        kanban.us_statuses.append({
-            "name": "Open",
-            "slug": "open",
-            "is_closed": False,
-            "is_archived": False,
-            "color": "#ff8a84",
-            "wip_limit": None,
-            "order": 1,
+        if options['type'] == "user_stories":
+            project_template.us_statuses = []
+            project_template.us_statuses.append({
+                "name": "Open",
+                "slug": "open",
+                "is_closed": False,
+                "is_archived": False,
+                "color": "#ff8a84",
+                "wip_limit": None,
+                "order": 1,
+            })
+            project_template.us_statuses.append({
+                "name": "Closed",
+                "slug": "closed",
+                "is_closed": True,
+                "is_archived": False,
+                "color": "#669900",
+                "wip_limit": None,
+                "order": 2,
+            })
+            project_template.default_options["us_status"] = "Open"
+        elif options['type'] == "issues":
+            project_template.issue_statuses = []
+            project_template.issue_statuses.append({
+                "name": "Open",
+                "slug": "open",
+                "is_closed": False,
+                "color": "#ff8a84",
+                "order": 1,
+            })
+            project_template.issue_statuses.append({
+                "name": "Closed",
+                "slug": "closed",
+                "is_closed": True,
+                "color": "#669900",
+                "order": 2,
+            })
+            project_template.default_options["issue_status"] = "Open"
+
+        project_template.roles.append({
+            "name": "Github",
+            "slug": "github",
+            "computable": False,
+            "permissions": project_template.roles[0]['permissions'],
+            "order": 70,
         })
-        kanban.us_statuses.append({
-            "name": "Closed",
-            "slug": "closed",
-            "is_closed": True,
-            "is_archived": False,
-            "color": "#669900",
-            "wip_limit": None,
-            "order": 2,
-        })
-        kanban.default_options["us_status"] = "Open"
 
         tags_colors = []
         for label in repo.get_labels():
-            name = label.name
-            if not name:
-                name = label.color
-            name = name.lower()
-            color = self._ensure_hex_color(label.color)
+            name = label.name.lower()
+            color = "#{}".format(label.color)
             tags_colors.append([name, color])
 
         project = Project.objects.create(
@@ -67,9 +83,39 @@ class GithubImporter:
             description=repo.description,
             owner=self._user,
             tags_colors=tags_colors,
-            creation_template=kanban
+            creation_template=project_template
         )
+
+        for user in repo.get_collaborators():
+            taiga_user = self._get_user(user)
+            if taiga_user is None or taiga_user == self._user:
+                continue
+
+            Membership.objects.create(
+                user=taiga_user,
+                project=project,
+                role=project.get_roles().get(slug="github"),
+                is_admin=False,
+                invited_by=self._user,
+            )
+
         return project
+
+    def _get_user(self, user, default=None):
+        if not user:
+            return default
+
+        try:
+            return AuthData.objects.get(key="github", value=user.id).user
+        except AuthData.DoesNotExist:
+            pass
+
+        try:
+            return User.objects.get(email=user.email)
+        except User.DoesNotExist:
+            pass
+
+        return default
 
     def import_user_stories(self, project, project_id):
         repo = self._client.get_repo(project_id)
@@ -77,13 +123,13 @@ class GithubImporter:
 
         for issue in issues:
             tags = []
-            for tag in issue.labels:
-                tags.append(tag.name.lower())
+            for label in issue.labels:
+                tags.append(label.name.lower())
 
             us = UserStory.objects.create(
-                ref=issue.number,
                 project=project,
-                owner=self._user,
+                owner=self._get_user(issue.user, self._user),
+                assigned_to=self._get_user(issue.assignee),
                 status=project.us_statuses.get(slug=issue.state),
                 kanban_order=issue.number,
                 sprint_order=issue.number,
@@ -93,41 +139,47 @@ class GithubImporter:
                 tags=tags
             )
             UserStory.objects.filter(id=us.id).update(
+                ref=issue.number,
                 modified_date=issue.updated_at,
                 created_date=issue.created_at
             )
 
-            # self._import_attachments(us, card)
             take_snapshot(us, comment="", user=None, delete=False)
             self._import_comments(us, issue)
 
-    def _import_attachments(self, us, card):
-        for attachment in card.attachments:
-            if attachment['bytes'] is None:
-                continue
-            data = requests.get(attachment['url'])
-            att = Attachment(
-                owner=self._user,
-                project=us.project,
-                content_type=ContentType.objects.get_for_model(UserStory),
-                object_id=us.id,
-                name=attachment['name'],
-                size=attachment['bytes'],
-                created_date=attachment['date'],
-                is_deprecated=False,
-            )
-            att.attached_file.save(attachment['name'], ContentFile(data.content), save=True)
+    def import_issues(self, project, project_id):
+        repo = self._client.get_repo(project_id)
+        issues = chain(repo.get_issues(state="open"), repo.get_issues(state="closed"))
 
-            UserStory.objects.filter(id=us.id, created_date__gt=attachment['date']).update(
-                created_date=attachment['date']
+        for issue in issues:
+            tags = []
+            for label in issue.labels:
+                tags.append(label.name.lower())
+
+            taiga_issue = Issue.objects.create(
+                project=project,
+                owner=self._get_user(issue.user, self._user),
+                assigned_to=self._get_user(issue.assignee),
+                status=project.issue_statuses.get(slug=issue.state),
+                subject=issue.title,
+                description=issue.body or "",
+                tags=tags
+            )
+            Issue.objects.filter(id=taiga_issue.id).update(
+                ref=issue.number,
+                modified_date=issue.updated_at,
+                created_date=issue.created_at
             )
 
-    def _import_comments(self, us, issue):
+            take_snapshot(taiga_issue, comment="", user=None, delete=False)
+            self._import_comments(taiga_issue, issue)
+
+    def _import_comments(self, obj, issue):
         for comment in issue.get_comments():
             snapshot = take_snapshot(
-                us,
+                obj,
                 comment=comment.body,
-                user=User(full_name=comment.user.name),
+                user=self._get_user(comment.user, User(full_name=comment.user.name)),
                 delete=False
             )
             HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment.created_at)
@@ -168,11 +220,3 @@ class GithubImporter:
                                 verifier=oauth_verifier)
         access_token = session.fetch_access_token(access_token_url)
         return access_token
-
-    def _ensure_hex_color(self, color):
-        if color is None:
-            return None
-        try:
-            return webcolors.name_to_hex(color)
-        except ValueError:
-            return color

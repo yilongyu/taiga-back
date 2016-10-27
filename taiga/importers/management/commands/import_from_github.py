@@ -19,7 +19,7 @@
 from django.core.management.base import BaseCommand
 
 from taiga.importers.github import GithubImporter
-from taiga.users.models import User
+from taiga.users.models import User, AuthData
 from taiga.projects.services import projects as service
 
 import unittest.mock
@@ -30,6 +30,10 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('token', nargs="?", type=str)
         parser.add_argument('project_id', nargs="?", type=str)
+        parser.add_argument('--template', dest='template', default="kanban",
+                            help='template to use: scrum or kanban (default kanban)')
+        parser.add_argument('--type', dest='type', default="user_stories",
+                            help='type of object to use: user_stories or issues (default user_stories)')
 
     def handle(self, *args, **options):
         admin = User.objects.get(username="admin")
@@ -44,6 +48,7 @@ class Command(BaseCommand):
             oauth_verifier = input("Token: ")
             access_data = GithubImporter.get_access_token(oauth_token, oauth_token_secret, oauth_verifier)
             token = access_data['oauth_token']
+
         importer = GithubImporter(admin, token)
 
         if options.get('project_id', None):
@@ -53,5 +58,9 @@ class Command(BaseCommand):
             for project in importer.list_projects():
                 print("- {}: {}".format(project['id'], project['name']))
             project_id = input("Project id: ")
-        project = importer.import_project(project_id)
-        importer.import_user_stories(project, project_id)
+
+        project = importer.import_project(project_id, {"template": options.get('template'), "type": options.get('type')})
+        if options.get('type') == "user_stories":
+            importer.import_user_stories(project, project_id)
+        elif options.get('type') == "issues":
+            importer.import_issues(project, project_id)
