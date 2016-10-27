@@ -17,6 +17,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from django.core.management.base import BaseCommand
+from django.conf import settings
 
 from taiga.importers.github import GithubImporter
 from taiga.users.models import User, AuthData
@@ -43,18 +44,18 @@ class Command(BaseCommand):
         if options.get('token', None):
             token = options.get('token')
         else:
-            (oauth_token, oauth_token_secret, url) = GithubImporter.get_auth_url()
-            print("Go to here and come with your token: {}".format(url))
-            oauth_verifier = input("Token: ")
-            access_data = GithubImporter.get_access_token(oauth_token, oauth_token_secret, oauth_verifier)
-            token = access_data['oauth_token']
+            url = GithubImporter.get_auth_url(settings.GITHUB_API_CLIENT_ID)
+            print("Go to here and come with your code (in the redirected url): {}".format(url))
+            code = input("Code: ")
+            access_data = GithubImporter.get_access_token(settings.GITHUB_API_CLIENT_ID, settings.GITHUB_API_CLIENT_SECRET, code)
+            token = access_data
 
         importer = GithubImporter(admin, token)
 
         if options.get('project_id', None):
             project_id = options.get('project_id')
         else:
-            print("Select the project to imort:")
+            print("Select the project to import:")
             for project in importer.list_projects():
                 print("- {}: {}".format(project['id'], project['name']))
             project_id = input("Project id: ")

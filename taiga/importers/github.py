@@ -1,4 +1,6 @@
 from requests_oauthlib import OAuth1Session
+import requests
+from urllib.parse import parse_qsl
 from django.conf import settings
 from github import Github
 from itertools import chain
@@ -185,38 +187,14 @@ class GithubImporter:
             HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment.created_at)
 
     @classmethod
-    def get_auth_url(cls):
-        request_token_url = 'https://trello.com/1/OAuthGetRequestToken'
-        authorize_url = 'https://trello.com/1/OAuthAuthorizeToken'
-        expiration = "never"
-        scope = "read,write,account"
-        trello_key = settings.TRELLO_API_KEY
-        trello_secret = settings.TRELLO_SECRET_KEY
-        name = "Taiga"
-
-        session = OAuth1Session(client_key=trello_key, client_secret=trello_secret)
-        response = session.fetch_request_token(request_token_url)
-        oauth_token, oauth_token_secret = response.get('oauth_token'), response.get('oauth_token_secret')
-
-        return (
-            oauth_token,
-            oauth_token_secret,
-            "{authorize_url}?oauth_token={oauth_token}&scope={scope}&expiration={expiration}&name={name}".format(
-                authorize_url=authorize_url,
-                oauth_token=oauth_token,
-                expiration=expiration,
-                scope=scope,
-                name=name,
-            )
-        )
+    def get_auth_url(cls, client_id):
+        return "https://github.com/login/oauth/authorize?client_id={}".format(client_id)
 
     @classmethod
-    def get_access_token(cls, oauth_token, oauth_token_secret, oauth_verifier):
-        api_key = settings.TRELLO_API_KEY
-        api_secret = settings.TRELLO_SECRET_KEY
-        access_token_url = 'https://trello.com/1/OAuthGetAccessToken'
-        session = OAuth1Session(client_key=api_key, client_secret=api_secret,
-                                resource_owner_key=oauth_token, resource_owner_secret=oauth_token_secret,
-                                verifier=oauth_verifier)
-        access_token = session.fetch_access_token(access_token_url)
-        return access_token
+    def get_access_token(cls, client_id, client_secret, code):
+        result = requests.post("https://github.com/login/oauth/access_token", {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+        })
+        return dict(parse_qsl(result.content))[b'access_token'].decode('utf-8')

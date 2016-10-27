@@ -49,7 +49,7 @@ class Command(BaseCommand):
         if options.get('project_id', None):
             project_id = options.get('project_id')
         else:
-            print("Select the project to imort:")
+            print("Select the project to import:")
             for project in importer.list_projects():
                 print("- {}: {}".format(project['id'], project['name']))
             project_id = input("Project id: ")
