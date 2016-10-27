@@ -37,34 +37,48 @@ class TrelloImporter:
         )
 
     def list_projects(self):
-        boards = self._client.list_boards()
-        return [{"id": board.id, "name": board.name} for board in boards]
+        return self._client.fetch_json("/board?fields=id,name")
 
     def import_project(self, project_id):
-        # trello_avatar_template = "https://trello-logos.s3.amazonaws.com/{}/170.png"
-        # print(trello_avatar_template.format(board.organization.logoHash))
-        board = self._client.get_board(project_id)
-        labels = board.get_labels(limit=1000)
-        statuses = board.all_lists()
+        self._board = self._client.fetch_json("/board/{}?{}".format(
+            project_id,
+            "&".join([
+                "fields=name,desc",
+                "cards=all",
+                "card_fields=closed,labels,idList,desc,due,name,pos,dateLastActivity,idChecklists",
+                "card_attachments=true",
+                "labels=all",
+                "labels_limit=1000",
+                "lists=all",
+                "list_fields=closed,name,pos",
+                "members=none",
+                "checklists=all",
+                "checklist_fields=name",
+                "organization=true",
+                "organization_fields=logoHash",
+            ])
+        ))
+        board = self._board
+        labels = board['labels']
+        statuses = board['lists']
         kanban = ProjectTemplate.objects.get(slug="kanban")
         kanban.us_statuses = []
         counter = 0
         for us_status in statuses:
-            if us_status.closed and not self._import_closed_data:
-                continue
             if counter == 0:
-                kanban.default_options["us_status"] = us_status.name
+                kanban.default_options["us_status"] = us_status['name']
 
             counter += 1
-            kanban.us_statuses.append({
-                "name": us_status.name,
-                "slug": slugify(us_status.name),
-                "is_closed": False,
-                "is_archived": False,
-                "color": "#999999",
-                "wip_limit": None,
-                "order": counter,
-            })
+            if us_status['name'] not in [s['name'] for s in kanban.us_statuses]:
+                kanban.us_statuses.append({
+                    "name": us_status['name'],
+                    "slug": slugify(us_status['name']),
+                    "is_closed": False,
+                    "is_archived": True if us_status['closed'] else False,
+                    "color": "#999999",
+                    "wip_limit": None,
+                    "order": us_status['pos'],
+                })
 
         kanban.task_statuses = []
         kanban.task_statuses.append({
@@ -84,20 +98,27 @@ class TrelloImporter:
         kanban.default_options["task_status"] = "Incomplete"
         tags_colors = []
         for label in labels:
-            name = label.name
+            name = label['name']
             if not name:
-                name = label.color
+                name = label['color']
             name = name.lower()
-            color = self._ensure_hex_color(label.color)
+            color = self._ensure_hex_color(label['color'])
             tags_colors.append([name, color])
 
         project = Project.objects.create(
-            name=board.name,
-            description=board.description,
+            name=board['name'],
+            description=board['desc'],
             owner=self._user,
             tags_colors=tags_colors,
             creation_template=kanban
         )
+
+        if board.get('organization', None):
+            trello_avatar_template = "https://trello-logos.s3.amazonaws.com/{}/170.png"
+            project_logo_url = trello_avatar_template.format(board['organization']['logoHash'])
+            data = requests.get(project_logo_url)
+            project.logo.save("logo.png", ContentFile(data.content), save=True)
+
         UserStoryCustomAttribute.objects.create(
             name="Due",
             description="Due date",
@@ -108,47 +129,45 @@ class TrelloImporter:
         return project
 
     def import_user_stories(self, project, project_id):
-        board = self._client.get_board(project_id)
-        statuses = {s.id: s for s in board.all_lists()}
-        cards = board.all_cards()
+        statuses = {s['id']: s for s in self._board['lists']}
+        cards = self._board['cards']
 
         has_due_date = False
         due_date_field = project.userstorycustomattributes.first()
 
         for card in cards:
-            if card.closed and not self._import_closed_data:
+            if card['closed'] and not self._import_closed_data:
                 continue
-            if statuses[card.list_id].closed and not self._import_closed_data:
+            if statuses[card['idList']]['closed'] and not self._import_closed_data:
                 continue
-            card.fetch()
 
             tags = []
-            for tag in card.labels:
-                name = tag.name
+            for tag in card['labels']:
+                name = tag['name']
                 if not name:
-                    name = tag.color
+                    name = tag['color']
                 name = name.lower()
                 tags.append(name)
 
             us = UserStory.objects.create(
                 project=project,
                 owner=self._user,
-                status=project.us_statuses.get(name=statuses[card.list_id].name),
-                kanban_order=card.pos,
-                sprint_order=card.pos,
-                backlog_order=card.pos,
-                subject=card.name,
-                description=card.description,
+                status=project.us_statuses.get(name=statuses[card['idList']]['name']),
+                kanban_order=card['pos'],
+                sprint_order=card['pos'],
+                backlog_order=card['pos'],
+                subject=card['name'],
+                description=card['desc'],
                 tags=tags
             )
             UserStory.objects.filter(id=us.id).update(
-                modified_date=card.date_last_activity,
-                created_date=card.date_last_activity
+                modified_date=card['dateLastActivity'],
+                created_date=card['dateLastActivity']
             )
 
-            if card.due:
+            if card['due']:
                 has_due_date = True
-                us.custom_attributes_values.attributes_values = {due_date_field.id: card.due}
+                us.custom_attributes_values.attributes_values = {due_date_field.id: card['due']}
                 us.custom_attributes_values.save()
             self._import_attachments(us, card)
             self._import_tasks(us, card)
@@ -158,8 +177,9 @@ class TrelloImporter:
             due_date_field.delete()
 
     def _import_tasks(self, us, card):
-        for checklist in card.fetch_checklists():
-            for item in checklist.items:
+        checklists_by_id = {c['id']: c for c in self._board['checklists']}
+        for checklist_id in card['idChecklists']:
+            for item in checklists_by_id.get(checklist_id, {}).get('checkItems', []):
                 Task.objects.create(
                     subject=item['name'],
                     status=us.project.task_statuses.get(slug=item['state']),
@@ -168,7 +188,7 @@ class TrelloImporter:
                 )
 
     def _import_attachments(self, us, card):
-        for attachment in card.attachments:
+        for attachment in card['attachments']:
             if attachment['bytes'] is None:
                 continue
             data = requests.get(attachment['url'])
@@ -189,101 +209,112 @@ class TrelloImporter:
             )
 
     def _import_actions(self, us, card, statuses):
-        ignored_actions = [
-            "addMemberToBoard", "addMemberToOrganization",
-            "addToOrganizationBoard", "copyBoard", "copyCard", "createBoard",
-            "createList", "createOrganization", "deleteBoardInvitation",
-            "emailCard", "makeAdminOfBoard", "makeNormalMemberOfBoard",
-            "makeNormalMemberOfOrganization", "makeObserverOfBoard",
-            "moveCardFromBoard", "moveCardToBoard", "moveListFromBoard",
-            "moveListToBoard", "removeChecklistFromCard",
-            "removeFromOrganizationBoard", "unconfirmedBoardInvitation",
-            "unconfirmedOrganizationInvitation", "updateBoard",
-            "updateCheckItemStateOnCard", "updateChecklist", "updateList",
-            "updateList:closed", "updateList:name", "updateMember",
-            "updateOrganization", "deleteOrganizationInvitation",
-            "updateCard:closed", "updateCard:desc", "updateCard:idList",
-            "updateCard:name", "disablePowerUp", "enablePowerUp",
-            "memberJoinedTrello",
+        included_actions = [
+            "addAttachmentToCard", "addMemberToCard", "commentCard",
+            "convertToCardFromCheckItem", "copyCommentCard", "createCard",
+            "deleteAttachmentFromCard", "deleteCard", "removeMemberFromCard",
+            "updateCard",
         ]
+
+        actions = self._client.fetch_json("/card/{}/actions?{}".format(
+            card['id'],
+            "&".join([
+                "filter={}".format(",".join(included_actions)),
+                "limit=1000",
+                "memberCreator=true",
+                "memberCreator_fields=fullName",
+            ])
+        ))
+
         due_date_field = us.project.userstorycustomattributes.first()
-        card.fetch_actions(action_filter="all")
+
         key = make_key_from_model_object(us)
         typename = get_typename_for_model_class(UserStory)
-        # TODO: ENSURE THAT GET ALL ACTIONS (add limit up to 1000 and take care about pagination)
-        for action in card.actions:
-            change_old = {}
-            change_new = {}
-            hist_type = HistoryType.change
-            comment = ""
-            user = {"pk": None, "name": action.get('memberCreator', {}).get('fullName', None)}
-            is_hidden = False
+        while actions:
+            print(card['id'], ":", len(actions))
+            for action in actions:
+                change_old = {}
+                change_new = {}
+                hist_type = HistoryType.change
+                comment = ""
+                user = {"pk": None, "name": action.get('memberCreator', {}).get('fullName', None)}
+                is_hidden = False
 
-            if action['type'] in ignored_actions:
-                continue
-            elif action['type'] == "addAttachmentToCard":
-                continue
-            elif action['type'] == "addMemberToCard":
-                continue
-            elif action['type'] == "commentCard":
-                comment = action['data']['text']
-            elif action['type'] == "convertToCardFromCheckItem":
-                UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                    created_date=action['date']
-                )
-                hist_type = HistoryType.create
-            elif action['type'] == "copyCommentCard":
-                UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                    created_date=action['date']
-                )
-                hist_type = HistoryType.create
-            elif action['type'] == "createCard":
-                UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                    created_date=action['date']
-                )
-                hist_type = HistoryType.create
-            elif action['type'] == "deleteAttachmentFromCard":
-                continue
-            elif action['type'] == "deleteCard":
-                continue
-            elif action['type'] == "removeMemberFromCard":
-                continue
-            elif action['type'] == "updateCard":
-                if 'desc' in action['data']['old']:
-                    change_old["description"] = action['data']['old']['desc']
-                    change_new["description"] = action['data']['card']['desc']
-                    change_old["description_html"] = mdrender(us.project, action['data']['old']['desc'])
-                    change_new["description_html"] = mdrender(us.project, action['data']['card']['desc'])
-                if 'idList' in action['data']['old']:
-                    change_old["status"] = us.project.us_statuses.get(name=statuses[action['data']['old']['idList']].name).id
-                    change_new["status"] = us.project.us_statuses.get(name=statuses[action['data']['card']['idList']].name).id
-                if 'name' in action['data']['old']:
-                    change_old["subject"] = action['data']['old']['name']
-                    change_new["subject"] = action['data']['card']['name']
-                if 'due' in action['data']['old']:
-                    change_old["custom_attributes"] = [{"name": "Due", "value": action['data']['old']['due'], "id": due_date_field.id}]
-                    change_new["custom_attributes"] = [{"name": "Due", "value": action['data']['card']['due'], "id": due_date_field.id}]
-
-                if change_old == {}:
+                if action['type'] == "addAttachmentToCard":
                     continue
+                elif action['type'] == "addMemberToCard":
+                    continue
+                elif action['type'] == "commentCard":
+                    comment = str(action['data']['text'])
+                elif action['type'] == "convertToCardFromCheckItem":
+                    UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                        created_date=action['date']
+                    )
+                    hist_type = HistoryType.create
+                elif action['type'] == "copyCommentCard":
+                    UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                        created_date=action['date']
+                    )
+                    hist_type = HistoryType.create
+                elif action['type'] == "createCard":
+                    UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                        created_date=action['date']
+                    )
+                    hist_type = HistoryType.create
+                elif action['type'] == "deleteAttachmentFromCard":
+                    continue
+                elif action['type'] == "deleteCard":
+                    continue
+                elif action['type'] == "removeMemberFromCard":
+                    continue
+                elif action['type'] == "updateCard":
+                    if 'desc' in action['data']['old']:
+                        change_old["description"] = str(action['data']['old']['desc'])
+                        change_new["description"] = str(action['data']['card']['desc'])
+                        change_old["description_html"] = mdrender(us.project, str(action['data']['old']['desc']))
+                        change_new["description_html"] = mdrender(us.project, str(action['data']['card']['desc']))
+                    if 'idList' in action['data']['old']:
+                        change_old["status"] = us.project.us_statuses.get(name=statuses[action['data']['old']['idList']]['name']).id
+                        change_new["status"] = us.project.us_statuses.get(name=statuses[action['data']['card']['idList']]['name']).id
+                    if 'name' in action['data']['old']:
+                        change_old["subject"] = action['data']['old']['name']
+                        change_new["subject"] = action['data']['card']['name']
+                    if 'due' in action['data']['old']:
+                        change_old["custom_attributes"] = [{"name": "Due", "value": action['data']['old']['due'], "id": due_date_field.id}]
+                        change_new["custom_attributes"] = [{"name": "Due", "value": action['data']['card']['due'], "id": due_date_field.id}]
 
-            diff = make_diff_from_dicts(change_old, change_new)
-            fdiff = FrozenDiff(key, diff, {})
+                    if change_old == {}:
+                        continue
 
-            entry = HistoryEntry.objects.create(
-                user=user,
-                project_id=us.project.id,
-                key=key,
-                type=hist_type,
-                snapshot=None,
-                diff=fdiff.diff,
-                values=make_diff_values(typename, fdiff),
-                comment=comment,
-                comment_html=mdrender(us.project, comment),
-                is_hidden=is_hidden,
-                is_snapshot=False,
-            )
-            HistoryEntry.objects.filter(id=entry.id).update(created_at=action['date'])
+                diff = make_diff_from_dicts(change_old, change_new)
+                fdiff = FrozenDiff(key, diff, {})
+
+                entry = HistoryEntry.objects.create(
+                    user=user,
+                    project_id=us.project.id,
+                    key=key,
+                    type=hist_type,
+                    snapshot=None,
+                    diff=fdiff.diff,
+                    values=make_diff_values(typename, fdiff),
+                    comment=comment,
+                    comment_html=mdrender(us.project, comment),
+                    is_hidden=is_hidden,
+                    is_snapshot=False,
+                )
+                HistoryEntry.objects.filter(id=entry.id).update(created_at=action['date'])
+
+            actions = self._client.fetch_json("/card/{}/actions?{}".format(
+                card['id'],
+                "&".join([
+                    "filter={}".format(",".join(included_actions)),
+                    "limit=1000",
+                    "since=lastView",
+                    "before={}".format(action['date']),
+                    "memberCreator=true",
+                    "memberCreator_fields=fullName",
+                ])
+            ))
 
     @classmethod
     def get_auth_url(cls):
@@ -329,3 +360,7 @@ class TrelloImporter:
             return webcolors.name_to_hex(color)
         except ValueError:
             return color
+
+    def cleanup(self, project):
+        if not self._import_closed_data:
+            project.us_statuses.filter(is_archived=True).delete()

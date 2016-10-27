@@ -57,3 +57,4 @@ class Command(BaseCommand):
             project_id = input("Project id: ")
         project = importer.import_project(project_id)
         importer.import_user_stories(project, project_id)
+        importer.cleanup(project)
