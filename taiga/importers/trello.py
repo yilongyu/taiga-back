@@ -11,10 +11,19 @@ from taiga.projects.models import Project, ProjectTemplate
 from taiga.projects.userstories.models import UserStory
 from taiga.projects.tasks.models import Task
 from taiga.projects.attachments.models import Attachment
-from taiga.projects.history.services import take_snapshot
+from taiga.projects.history.services import (take_snapshot,
+                                             make_diff_from_dicts,
+                                             make_diff_values,
+                                             make_key_from_model_object,
+                                             get_typename_for_model_class,
+                                             FrozenDiff)
 from taiga.projects.history.models import HistoryEntry
+from taiga.projects.history.choices import HistoryType
 from taiga.projects.custom_attributes.models import UserStoryCustomAttribute
+from taiga.mdrender.service import render as mdrender
 from taiga.users.models import User
+
+# TODO: Read the organization avatar to use as project icon
 
 
 class TrelloImporter:
@@ -32,6 +41,8 @@ class TrelloImporter:
         return [{"id": board.id, "name": board.name} for board in boards]
 
     def import_project(self, project_id):
+        # trello_avatar_template = "https://trello-logos.s3.amazonaws.com/{}/170.png"
+        # print(trello_avatar_template.format(board.organization.logoHash))
         board = self._client.get_board(project_id)
         labels = board.get_labels(limit=1000)
         statuses = board.all_lists()
@@ -141,8 +152,7 @@ class TrelloImporter:
                 us.custom_attributes_values.save()
             self._import_attachments(us, card)
             self._import_tasks(us, card)
-            take_snapshot(us, comment="", user=None, delete=False)
-            self._import_comments(us, card)
+            self._import_actions(us, card, statuses)
 
         if not has_due_date:
             due_date_field.delete()
@@ -178,18 +188,102 @@ class TrelloImporter:
                 created_date=attachment['date']
             )
 
-    def _import_comments(self, us, card):
-        for comment in card.fetch_comments(limit=1000):
-            snapshot = take_snapshot(
-                us,
-                comment=comment['data']['text'],
-                user=User(full_name=comment.get('memberCreator', {}).get('fullName', None)),
-                delete=False
+    def _import_actions(self, us, card, statuses):
+        ignored_actions = [
+            "addMemberToBoard", "addMemberToOrganization",
+            "addToOrganizationBoard", "copyBoard", "copyCard", "createBoard",
+            "createList", "createOrganization", "deleteBoardInvitation",
+            "emailCard", "makeAdminOfBoard", "makeNormalMemberOfBoard",
+            "makeNormalMemberOfOrganization", "makeObserverOfBoard",
+            "moveCardFromBoard", "moveCardToBoard", "moveListFromBoard",
+            "moveListToBoard", "removeChecklistFromCard",
+            "removeFromOrganizationBoard", "unconfirmedBoardInvitation",
+            "unconfirmedOrganizationInvitation", "updateBoard",
+            "updateCheckItemStateOnCard", "updateChecklist", "updateList",
+            "updateList:closed", "updateList:name", "updateMember",
+            "updateOrganization", "deleteOrganizationInvitation",
+            "updateCard:closed", "updateCard:desc", "updateCard:idList",
+            "updateCard:name", "disablePowerUp", "enablePowerUp",
+            "memberJoinedTrello",
+        ]
+        due_date_field = us.project.userstorycustomattributes.first()
+        card.fetch_actions(action_filter="all")
+        key = make_key_from_model_object(us)
+        typename = get_typename_for_model_class(UserStory)
+        # TODO: ENSURE THAT GET ALL ACTIONS (add limit up to 1000 and take care about pagination)
+        for action in card.actions:
+            change_old = {}
+            change_new = {}
+            hist_type = HistoryType.change
+            comment = ""
+            user = {"pk": None, "name": action.get('memberCreator', {}).get('fullName', None)}
+            is_hidden = False
+
+            if action['type'] in ignored_actions:
+                continue
+            elif action['type'] == "addAttachmentToCard":
+                continue
+            elif action['type'] == "addMemberToCard":
+                continue
+            elif action['type'] == "commentCard":
+                comment = action['data']['text']
+            elif action['type'] == "convertToCardFromCheckItem":
+                UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                    created_date=action['date']
+                )
+                hist_type = HistoryType.create
+            elif action['type'] == "copyCommentCard":
+                UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                    created_date=action['date']
+                )
+                hist_type = HistoryType.create
+            elif action['type'] == "createCard":
+                UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                    created_date=action['date']
+                )
+                hist_type = HistoryType.create
+            elif action['type'] == "deleteAttachmentFromCard":
+                continue
+            elif action['type'] == "deleteCard":
+                continue
+            elif action['type'] == "removeMemberFromCard":
+                continue
+            elif action['type'] == "updateCard":
+                if 'desc' in action['data']['old']:
+                    change_old["description"] = action['data']['old']['desc']
+                    change_new["description"] = action['data']['card']['desc']
+                    change_old["description_html"] = mdrender(us.project, action['data']['old']['desc'])
+                    change_new["description_html"] = mdrender(us.project, action['data']['card']['desc'])
+                if 'idList' in action['data']['old']:
+                    change_old["status"] = us.project.us_statuses.get(name=statuses[action['data']['old']['idList']].name).id
+                    change_new["status"] = us.project.us_statuses.get(name=statuses[action['data']['card']['idList']].name).id
+                if 'name' in action['data']['old']:
+                    change_old["subject"] = action['data']['old']['name']
+                    change_new["subject"] = action['data']['card']['name']
+                if 'due' in action['data']['old']:
+                    change_old["custom_attributes"] = [{"name": "Due", "value": action['data']['old']['due'], "id": due_date_field.id}]
+                    change_new["custom_attributes"] = [{"name": "Due", "value": action['data']['card']['due'], "id": due_date_field.id}]
+
+                if change_old == {}:
+                    continue
+
+            diff = make_diff_from_dicts(change_old, change_new)
+            fdiff = FrozenDiff(key, diff, {})
+
+            entry = HistoryEntry.objects.create(
+                user=user,
+                project_id=us.project.id,
+                key=key,
+                type=hist_type,
+                snapshot=None,
+                diff=fdiff.diff,
+                values=make_diff_values(typename, fdiff),
+                comment=comment,
+                comment_html=mdrender(us.project, comment),
+                is_hidden=is_hidden,
+                is_snapshot=False,
             )
-            HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment['date'])
-            UserStory.objects.filter(id=us.id, created_date__gt=comment['date']).update(
-                created_date=comment['date']
-            )
+            HistoryEntry.objects.filter(id=entry.id).update(created_at=action['date'])
 
     @classmethod
     def get_auth_url(cls):
