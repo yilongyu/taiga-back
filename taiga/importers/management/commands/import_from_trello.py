@@ -28,8 +28,10 @@ import timeit
 
 class Command(BaseCommand):
     def add_arguments(self, parser):
-        parser.add_argument('token', nargs="?", type=str)
-        parser.add_argument('project_id', nargs="?", type=str)
+        parser.add_argument('--token', dest="token", type=str,
+                            help='Auth token')
+        parser.add_argument('--project_id', dest="project_id", type=str,
+                            help='Project ID or full name (ex: taigaio/taiga-back)')
 
     def handle(self, *args, **options):
         admin = User.objects.get(username="admin")

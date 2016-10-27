@@ -188,7 +188,7 @@ class GithubImporter:
 
     @classmethod
     def get_auth_url(cls, client_id):
-        return "https://github.com/login/oauth/authorize?client_id={}".format(client_id)
+        return "https://github.com/login/oauth/authorize?client_id={}&scope=user,repo".format(client_id)
 
     @classmethod
     def get_access_token(cls, client_id, client_secret, code):
