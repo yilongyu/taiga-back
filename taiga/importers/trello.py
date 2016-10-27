@@ -195,7 +195,7 @@ class TrelloImporter:
     def get_auth_url(cls):
         request_token_url = 'https://trello.com/1/OAuthGetRequestToken'
         authorize_url = 'https://trello.com/1/OAuthAuthorizeToken'
-        expiration = "never"
+        expiration = "1day"
         scope = "read,write,account"
         trello_key = settings.TRELLO_API_KEY
         trello_secret = settings.TRELLO_SECRET_KEY
