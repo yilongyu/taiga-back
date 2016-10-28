@@ -1,5 +1,4 @@
-from trello import TrelloClient
-from requests_oauthlib import OAuth1Session
+from requests_oauthlib import OAuth1Session, OAuth1
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.contrib.contenttypes.models import ContentType
@@ -22,6 +21,36 @@ from taiga.projects.custom_attributes.models import UserStoryCustomAttribute
 from taiga.mdrender.service import render as mdrender
 
 
+class TrelloClient:
+    def __init__(self, api_key, api_secret, token):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.token = token
+        self.oauth = OAuth1(
+            client_key=self.api_key,
+            client_secret=self.api_secret,
+            resource_owner_key=self.token
+        )
+
+    def get(self, uri_path, query_params=None):
+        headers = {'Accept': 'application/json'}
+        if query_params is None:
+            query_params = {}
+
+        if uri_path[0] == '/':
+            uri_path = uri_path[1:]
+        url = 'https://api.trello.com/1/%s' % uri_path
+
+        response = requests.get(url, params=query_params, headers=headers, auth=self.oauth)
+
+        if response.status_code == 401:
+            raise Exception("Unauthorized: %s at %s" % (response.text, url), response)
+        if response.status_code != 200:
+            raise Exception("Resource Unavailable: %s at %s" % (response.text, url), response)
+
+        return response.json()
+
+
 class TrelloImporter:
     def __init__(self, user, token):
         self._user = user
@@ -32,27 +61,27 @@ class TrelloImporter:
         )
 
     def list_projects(self):
-        return self._client.fetch_json("/board?fields=id,name")
+        return self._client.get("/board", {"fields": "id,name"})
 
     def import_project(self, project_id, options={"import_closed_data": False}):
-        data = self._client.fetch_json("/board/{}?{}".format(
-            project_id,
-            "&".join([
-                "fields=name,desc",
-                "cards=all",
-                "card_fields=closed,labels,idList,desc,due,name,pos,dateLastActivity,idChecklists",
-                "card_attachments=true",
-                "labels=all",
-                "labels_limit=1000",
-                "lists=all",
-                "list_fields=closed,name,pos",
-                "members=none",
-                "checklists=all",
-                "checklist_fields=name",
-                "organization=true",
-                "organization_fields=logoHash",
-            ])
-        ))
+        data = self._client.get(
+            "/board/{}".format(project_id),
+            {
+                "fields": "name,desc",
+                "cards": "all",
+                "card_fields": "closed,labels,idList,desc,due,name,pos,dateLastActivity,idChecklists",
+                "card_attachments": "true",
+                "labels": "all",
+                "labels_limit": "1000",
+                "lists": "all",
+                "list_fields": "closed,name,pos",
+                "members": "none",
+                "checklists": "all",
+                "checklist_fields": "name",
+                "organization": "true",
+                "organization_fields": "logoHash",
+            }
+        )
 
         project = self._import_project(data, options)
         self._import_user_stories_data(data, project, options)
@@ -212,15 +241,15 @@ class TrelloImporter:
             "updateCard",
         ]
 
-        actions = self._client.fetch_json("/card/{}/actions?{}".format(
-            card['id'],
-            "&".join([
-                "filter={}".format(",".join(included_actions)),
-                "limit=1000",
-                "memberCreator=true",
-                "memberCreator_fields=fullName",
-            ])
-        ))
+        actions = self._client.get(
+            "/card/{}/actions?".format(card['id']),
+            {
+                "filter": ",".join(included_actions),
+                "limit": "1000",
+                "memberCreator": "true",
+                "memberCreator_fields": "fullName",
+            }
+        )
 
         key = make_key_from_model_object(us)
         typename = get_typename_for_model_class(UserStory)
@@ -254,17 +283,17 @@ class TrelloImporter:
                 )
                 HistoryEntry.objects.filter(id=entry.id).update(created_at=action['date'])
 
-            actions = self._client.fetch_json("/card/{}/actions?{}".format(
-                card['id'],
-                "&".join([
-                    "filter={}".format(",".join(included_actions)),
-                    "limit=1000",
-                    "since=lastView",
-                    "before={}".format(action['date']),
-                    "memberCreator=true",
-                    "memberCreator_fields=fullName",
-                ])
-            ))
+            actions = self._client.get(
+                "/card/{}/actions?{}".format(card['id']),
+                {
+                    "filter": ",".join(included_actions),
+                    "limit": "1000",
+                    "since": "lastView",
+                    "before": action['date'],
+                    "memberCreator": "true",
+                    "memberCreator_fields": "fullName",
+                }
+            )
 
     def _import_action(self, us, action, statuses):
         due_date_field = us.project.userstorycustomattributes.first()
