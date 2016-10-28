@@ -66,7 +66,7 @@ class TrelloImporter:
     def list_users(self, project_id):
         return self._client.get("/board/{}/members".format(project_id), {"fields": "id,fullName"})
 
-    def import_project(self, project_id, options={"import_closed_data": False}):
+    def import_project(self, project_id, options={"template": "kanban", "import_closed_data": False, "users_bindings": {}}):
         data = self._client.get(
             "/board/{}".format(project_id),
             {
@@ -94,16 +94,16 @@ class TrelloImporter:
         board = data
         labels = board['labels']
         statuses = board['lists']
-        kanban = ProjectTemplate.objects.get(slug="kanban")
-        kanban.us_statuses = []
+        project_template = ProjectTemplate.objects.get(slug=options['template'])
+        project_template.us_statuses = []
         counter = 0
         for us_status in statuses:
             if counter == 0:
-                kanban.default_options["us_status"] = us_status['name']
+                project_template.default_options["us_status"] = us_status['name']
 
             counter += 1
-            if us_status['name'] not in [s['name'] for s in kanban.us_statuses]:
-                kanban.us_statuses.append({
+            if us_status['name'] not in [s['name'] for s in project_template.us_statuses]:
+                project_template.us_statuses.append({
                     "name": us_status['name'],
                     "slug": slugify(us_status['name']),
                     "is_closed": False,
@@ -113,27 +113,27 @@ class TrelloImporter:
                     "order": us_status['pos'],
                 })
 
-        kanban.task_statuses = []
-        kanban.task_statuses.append({
+        project_template.task_statuses = []
+        project_template.task_statuses.append({
             "name": "Incomplete",
             "slug": "incomplete",
             "is_closed": False,
             "color": "#ff8a84",
             "order": 1,
         })
-        kanban.task_statuses.append({
+        project_template.task_statuses.append({
             "name": "Complete",
             "slug": "complete",
             "is_closed": True,
             "color": "#669900",
             "order": 2,
         })
-        kanban.default_options["task_status"] = "Incomplete"
-        kanban.roles.append({
+        project_template.default_options["task_status"] = "Incomplete"
+        project_template.roles.append({
             "name": "Trello",
             "slug": "trello",
             "computable": False,
-            "permissions": kanban.roles[0]['permissions'],
+            "permissions": project_template.roles[0]['permissions'],
             "order": 70,
         })
 
@@ -151,7 +151,7 @@ class TrelloImporter:
             description=board['desc'],
             owner=self._user,
             tags_colors=tags_colors,
-            creation_template=kanban
+            creation_template=project_template
         )
 
         if board.get('organization', None):

@@ -33,6 +33,8 @@ class Command(BaseCommand):
                             help='Auth token')
         parser.add_argument('--project_id', dest="project_id", type=str,
                             help='Project ID or full name (ex: taigaio/taiga-back)')
+        parser.add_argument('--template', dest='template', default="kanban",
+                            help='template to use: scrum or kanban (default kanban)')
         parser.add_argument('--ask-for-users', dest='ask_for_users', const=True,
                             action="store_const", default=False,
                             help='Import closed data')
@@ -75,6 +77,7 @@ class Command(BaseCommand):
                         print("ERROR: Invalid username or email")
 
         options = {
+            "template": options.get('template'),
             "import_closed_data": options.get("closed_data", False),
             "users_bindings": users_bindings
         }
