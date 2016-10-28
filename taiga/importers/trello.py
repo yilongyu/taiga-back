@@ -83,7 +83,7 @@ class TrelloImporter:
             }
         )
 
-        project = self._import_project(data, options)
+        project = self._import_project_data(data, options)
         self._import_user_stories_data(data, project, options)
         self._cleanup(project, options)
 
@@ -159,8 +159,8 @@ class TrelloImporter:
         return project
 
     def _import_user_stories_data(self, data, project, options):
-        statuses = {s['id']: s for s in self._board['lists']}
-        cards = self._board['cards']
+        statuses = {s['id']: s for s in data['lists']}
+        cards = data['cards']
         due_date_field = project.userstorycustomattributes.first()
 
         for card in cards:
@@ -198,11 +198,11 @@ class TrelloImporter:
                 created_date=card['dateLastActivity']
             )
             self._import_attachments(us, card)
-            self._import_tasks(us, card)
+            self._import_tasks(data, us, card)
             self._import_actions(us, card, statuses)
 
-    def _import_tasks(self, us, card):
-        checklists_by_id = {c['id']: c for c in self._board['checklists']}
+    def _import_tasks(self, data, us, card):
+        checklists_by_id = {c['id']: c for c in data['checklists']}
         for checklist_id in card['idChecklists']:
             for item in checklists_by_id.get(checklist_id, {}).get('checkItems', []):
                 Task.objects.create(
@@ -242,7 +242,7 @@ class TrelloImporter:
         ]
 
         actions = self._client.get(
-            "/card/{}/actions?".format(card['id']),
+            "/card/{}/actions".format(card['id']),
             {
                 "filter": ",".join(included_actions),
                 "limit": "1000",
@@ -284,7 +284,7 @@ class TrelloImporter:
                 HistoryEntry.objects.filter(id=entry.id).update(created_at=action['date'])
 
             actions = self._client.get(
-                "/card/{}/actions?{}".format(card['id']),
+                "/card/{}/actions".format(card['id']),
                 {
                     "filter": ",".join(included_actions),
                     "limit": "1000",
@@ -405,6 +405,6 @@ class TrelloImporter:
         except ValueError:
             return color
 
-    def cleanup(self, project, options):
+    def _cleanup(self, project, options):
         if not options.get("import_closed_data", False):
             project.us_statuses.filter(is_archived=True).delete()
