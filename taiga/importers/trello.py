@@ -11,8 +11,7 @@ from taiga.projects.models import Project, ProjectTemplate
 from taiga.projects.userstories.models import UserStory
 from taiga.projects.tasks.models import Task
 from taiga.projects.attachments.models import Attachment
-from taiga.projects.history.services import (take_snapshot,
-                                             make_diff_from_dicts,
+from taiga.projects.history.services import (make_diff_from_dicts,
                                              make_diff_values,
                                              make_key_from_model_object,
                                              get_typename_for_model_class,
@@ -21,14 +20,10 @@ from taiga.projects.history.models import HistoryEntry
 from taiga.projects.history.choices import HistoryType
 from taiga.projects.custom_attributes.models import UserStoryCustomAttribute
 from taiga.mdrender.service import render as mdrender
-from taiga.users.models import User
-
-# TODO: Read the organization avatar to use as project icon
 
 
 class TrelloImporter:
-    def __init__(self, user, token, import_closed_data=False):
-        self._import_closed_data = import_closed_data
+    def __init__(self, user, token):
         self._user = user
         self._client = TrelloClient(
             api_key=settings.TRELLO_API_KEY,
@@ -39,8 +34,8 @@ class TrelloImporter:
     def list_projects(self):
         return self._client.fetch_json("/board?fields=id,name")
 
-    def import_project(self, project_id):
-        self._board = self._client.fetch_json("/board/{}?{}".format(
+    def import_project(self, project_id, options={"import_closed_data": False}):
+        data = self._client.fetch_json("/board/{}?{}".format(
             project_id,
             "&".join([
                 "fields=name,desc",
@@ -58,7 +53,13 @@ class TrelloImporter:
                 "organization_fields=logoHash",
             ])
         ))
-        board = self._board
+
+        project = self._import_project(data, options)
+        self._import_user_stories_data(data, project, options)
+        self._cleanup(project, options)
+
+    def _import_project_data(self, data, options):
+        board = data
         labels = board['labels']
         statuses = board['lists']
         kanban = ProjectTemplate.objects.get(slug="kanban")
@@ -128,17 +129,15 @@ class TrelloImporter:
         )
         return project
 
-    def import_user_stories(self, project, project_id):
+    def _import_user_stories_data(self, data, project, options):
         statuses = {s['id']: s for s in self._board['lists']}
         cards = self._board['cards']
-
-        has_due_date = False
         due_date_field = project.userstorycustomattributes.first()
 
         for card in cards:
-            if card['closed'] and not self._import_closed_data:
+            if card['closed'] and not options.get("import_closed_data", False):
                 continue
-            if statuses[card['idList']]['closed'] and not self._import_closed_data:
+            if statuses[card['idList']]['closed'] and not options.get("import_closed_data", False):
                 continue
 
             tags = []
@@ -160,21 +159,18 @@ class TrelloImporter:
                 description=card['desc'],
                 tags=tags
             )
+
+            if card['due']:
+                us.custom_attributes_values.attributes_values = {due_date_field.id: card['due']}
+                us.custom_attributes_values.save()
+
             UserStory.objects.filter(id=us.id).update(
                 modified_date=card['dateLastActivity'],
                 created_date=card['dateLastActivity']
             )
-
-            if card['due']:
-                has_due_date = True
-                us.custom_attributes_values.attributes_values = {due_date_field.id: card['due']}
-                us.custom_attributes_values.save()
             self._import_attachments(us, card)
             self._import_tasks(us, card)
             self._import_actions(us, card, statuses)
-
-        if not has_due_date:
-            due_date_field.delete()
 
     def _import_tasks(self, us, card):
         checklists_by_id = {c['id']: c for c in self._board['checklists']}
@@ -226,65 +222,19 @@ class TrelloImporter:
             ])
         ))
 
-        due_date_field = us.project.userstorycustomattributes.first()
-
         key = make_key_from_model_object(us)
         typename = get_typename_for_model_class(UserStory)
         while actions:
-            print(card['id'], ":", len(actions))
             for action in actions:
-                change_old = {}
-                change_new = {}
-                hist_type = HistoryType.change
-                comment = ""
-                user = {"pk": None, "name": action.get('memberCreator', {}).get('fullName', None)}
-                is_hidden = False
+                action_data = self._import_action(us, action, statuses)
+                if action_data is None:
+                    continue
 
-                if action['type'] == "addAttachmentToCard":
-                    continue
-                elif action['type'] == "addMemberToCard":
-                    continue
-                elif action['type'] == "commentCard":
-                    comment = str(action['data']['text'])
-                elif action['type'] == "convertToCardFromCheckItem":
-                    UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                        created_date=action['date']
-                    )
-                    hist_type = HistoryType.create
-                elif action['type'] == "copyCommentCard":
-                    UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                        created_date=action['date']
-                    )
-                    hist_type = HistoryType.create
-                elif action['type'] == "createCard":
-                    UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                        created_date=action['date']
-                    )
-                    hist_type = HistoryType.create
-                elif action['type'] == "deleteAttachmentFromCard":
-                    continue
-                elif action['type'] == "deleteCard":
-                    continue
-                elif action['type'] == "removeMemberFromCard":
-                    continue
-                elif action['type'] == "updateCard":
-                    if 'desc' in action['data']['old']:
-                        change_old["description"] = str(action['data']['old']['desc'])
-                        change_new["description"] = str(action['data']['card']['desc'])
-                        change_old["description_html"] = mdrender(us.project, str(action['data']['old']['desc']))
-                        change_new["description_html"] = mdrender(us.project, str(action['data']['card']['desc']))
-                    if 'idList' in action['data']['old']:
-                        change_old["status"] = us.project.us_statuses.get(name=statuses[action['data']['old']['idList']]['name']).id
-                        change_new["status"] = us.project.us_statuses.get(name=statuses[action['data']['card']['idList']]['name']).id
-                    if 'name' in action['data']['old']:
-                        change_old["subject"] = action['data']['old']['name']
-                        change_new["subject"] = action['data']['card']['name']
-                    if 'due' in action['data']['old']:
-                        change_old["custom_attributes"] = [{"name": "Due", "value": action['data']['old']['due'], "id": due_date_field.id}]
-                        change_new["custom_attributes"] = [{"name": "Due", "value": action['data']['card']['due'], "id": due_date_field.id}]
-
-                    if change_old == {}:
-                        continue
+                change_old = action_data['change_old']
+                change_new = action_data['change_new']
+                hist_type = action_data['hist_type']
+                comment = action_data['comment']
+                user = action_data['user']
 
                 diff = make_diff_from_dicts(change_old, change_new)
                 fdiff = FrozenDiff(key, diff, {})
@@ -299,7 +249,7 @@ class TrelloImporter:
                     values=make_diff_values(typename, fdiff),
                     comment=comment,
                     comment_html=mdrender(us.project, comment),
-                    is_hidden=is_hidden,
+                    is_hidden=False,
                     is_snapshot=False,
                 )
                 HistoryEntry.objects.filter(id=entry.id).update(created_at=action['date'])
@@ -315,6 +265,71 @@ class TrelloImporter:
                     "memberCreator_fields=fullName",
                 ])
             ))
+
+    def _import_action(self, us, action, statuses):
+        due_date_field = us.project.userstorycustomattributes.first()
+
+        ignored_actions = ["addAttachmentToCard", "addMemberToCard",
+                           "deleteAttachmentFromCard", "deleteCard",
+                           "removeMemberFromCard"]
+
+        if action['type'] in ignored_actions:
+            return None
+
+        result = {
+            "change_old": {},
+            "change_new": {},
+            "hist_type": HistoryType.change,
+            "comment": "",
+            "user": {"pk": None, "name": action.get('memberCreator', {}).get('fullName', None)},
+        }
+
+        if action['type'] == "commentCard":
+            result['comment'] = str(action['data']['text'])
+        elif action['type'] == "convertToCardFromCheckItem":
+            UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                created_date=action['date']
+            )
+            result['hist_type'] = HistoryType.create
+        elif action['type'] == "copyCommentCard":
+            UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                created_date=action['date']
+            )
+            result['hist_type'] = HistoryType.create
+        elif action['type'] == "createCard":
+            UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
+                created_date=action['date']
+            )
+            result['hist_type'] = HistoryType.create
+        elif action['type'] == "updateCard":
+            if 'desc' in action['data']['old']:
+                result['change_old']["description"] = str(action['data']['old']['desc'])
+                result['change_new']["description"] = str(action['data']['card']['desc'])
+                result['change_old']["description_html"] = mdrender(us.project, str(action['data']['old']['desc']))
+                result['change_new']["description_html"] = mdrender(us.project, str(action['data']['card']['desc']))
+            if 'idList' in action['data']['old']:
+                old_status_name = statuses[action['data']['old']['idList']]['name']
+                result['change_old']["status"] = us.project.us_statuses.get(name=old_status_name).id
+                new_status_name = statuses[action['data']['card']['idList']]['name']
+                result['change_new']["status"] = us.project.us_statuses.get(name=new_status_name).id
+            if 'name' in action['data']['old']:
+                result['change_old']["subject"] = action['data']['old']['name']
+                result['change_new']["subject"] = action['data']['card']['name']
+            if 'due' in action['data']['old']:
+                result['change_old']["custom_attributes"] = [{
+                    "name": "Due",
+                    "value": action['data']['old']['due'],
+                    "id": due_date_field.id
+                }]
+                result['change_new']["custom_attributes"] = [{
+                    "name": "Due",
+                    "value": action['data']['card']['due'],
+                    "id": due_date_field.id
+                }]
+
+            if result['change_old'] == {}:
+                return None
+        return result
 
     @classmethod
     def get_auth_url(cls):
@@ -361,6 +376,6 @@ class TrelloImporter:
         except ValueError:
             return color
 
-    def cleanup(self, project):
-        if not self._import_closed_data:
+    def cleanup(self, project, options):
+        if not options.get("import_closed_data", False):
             project.us_statuses.filter(is_archived=True).delete()

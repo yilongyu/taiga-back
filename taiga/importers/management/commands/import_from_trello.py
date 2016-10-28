@@ -32,6 +32,9 @@ class Command(BaseCommand):
                             help='Auth token')
         parser.add_argument('--project_id', dest="project_id", type=str,
                             help='Project ID or full name (ex: taigaio/taiga-back)')
+        parser.add_argument('--closed-data', dest='closed_data', const=True,
+                            action="store_const", default=False,
+                            help='Import closed data')
 
     def handle(self, *args, **options):
         admin = User.objects.get(username="admin")
@@ -55,6 +58,8 @@ class Command(BaseCommand):
             for project in importer.list_projects():
                 print("- {}: {}".format(project['id'], project['name']))
             project_id = input("Project id: ")
-        project = importer.import_project(project_id)
-        importer.import_user_stories(project, project_id)
-        importer.cleanup(project)
+
+        options = {
+            "import_closed_data": options.get("closed_data", False)
+        }
+        importer.import_project(project_id, options)
