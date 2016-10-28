@@ -17,6 +17,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from django.core.management.base import BaseCommand
+from django.db.models import Q
 
 from taiga.importers.trello import TrelloImporter
 from taiga.users.models import User
@@ -32,15 +33,15 @@ class Command(BaseCommand):
                             help='Auth token')
         parser.add_argument('--project_id', dest="project_id", type=str,
                             help='Project ID or full name (ex: taigaio/taiga-back)')
+        parser.add_argument('--ask-for-users', dest='ask_for_users', const=True,
+                            action="store_const", default=False,
+                            help='Import closed data')
         parser.add_argument('--closed-data', dest='closed_data', const=True,
                             action="store_const", default=False,
                             help='Import closed data')
 
     def handle(self, *args, **options):
         admin = User.objects.get(username="admin")
-        for project in admin.projects.all():
-            service.orphan_project(project)
-
         if options.get('token', None):
             token = options.get('token')
         else:
@@ -59,7 +60,22 @@ class Command(BaseCommand):
                 print("- {}: {}".format(project['id'], project['name']))
             project_id = input("Project id: ")
 
+        users_bindings = {}
+        if options.get('ask_for_users', None):
+            print("Add the username or email for next trello users:")
+            for user in importer.list_users(project_id):
+                while True:
+                    username_or_email = input("{}: ".format(user['fullName']))
+                    if username_or_email == "":
+                        break
+                    try:
+                        users_bindings[user['id']] = User.objects.get(Q(username=username_or_email) | Q(email=username_or_email))
+                        break
+                    except User.DoesNotExist:
+                        print("ERROR: Invalid username or email")
+
         options = {
-            "import_closed_data": options.get("closed_data", False)
+            "import_closed_data": options.get("closed_data", False),
+            "users_bindings": users_bindings
         }
         importer.import_project(project_id, options)

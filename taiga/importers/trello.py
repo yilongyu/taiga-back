@@ -6,7 +6,7 @@ import requests
 import webcolors
 
 from django.template.defaultfilters import slugify
-from taiga.projects.models import Project, ProjectTemplate
+from taiga.projects.models import Project, ProjectTemplate, Membership
 from taiga.projects.userstories.models import UserStory
 from taiga.projects.tasks.models import Task
 from taiga.projects.attachments.models import Attachment
@@ -63,13 +63,16 @@ class TrelloImporter:
     def list_projects(self):
         return self._client.get("/board", {"fields": "id,name"})
 
+    def list_users(self, project_id):
+        return self._client.get("/board/{}/members".format(project_id), {"fields": "id,fullName"})
+
     def import_project(self, project_id, options={"import_closed_data": False}):
         data = self._client.get(
             "/board/{}".format(project_id),
             {
                 "fields": "name,desc",
                 "cards": "all",
-                "card_fields": "closed,labels,idList,desc,due,name,pos,dateLastActivity,idChecklists",
+                "card_fields": "closed,labels,idList,desc,due,name,pos,dateLastActivity,idChecklists,idMembers",
                 "card_attachments": "true",
                 "labels": "all",
                 "labels_limit": "1000",
@@ -126,6 +129,14 @@ class TrelloImporter:
             "order": 2,
         })
         kanban.default_options["task_status"] = "Incomplete"
+        kanban.roles.append({
+            "name": "Trello",
+            "slug": "trello",
+            "computable": False,
+            "permissions": kanban.roles[0]['permissions'],
+            "order": 70,
+        })
+
         tags_colors = []
         for label in labels:
             name = label['name']
@@ -156,9 +167,18 @@ class TrelloImporter:
             order=1,
             project=project
         )
+        for user in options.get('users_bindings', {}).values():
+            Membership.objects.create(
+                user=user,
+                project=project,
+                role=project.get_roles().get(slug="trello"),
+                is_admin=False,
+                invited_by=self._user,
+            )
         return project
 
     def _import_user_stories_data(self, data, project, options):
+        users_bindings = options.get('users_bindings', {})
         statuses = {s['id']: s for s in data['lists']}
         cards = data['cards']
         due_date_field = project.userstorycustomattributes.first()
@@ -177,9 +197,14 @@ class TrelloImporter:
                 name = name.lower()
                 tags.append(name)
 
+            assigned_to = None
+            if len(card['idMembers']) > 0:
+                assigned_to = users_bindings.get(card['idMembers'][0], None)
+
             us = UserStory.objects.create(
                 project=project,
                 owner=self._user,
+                assigned_to=assigned_to,
                 status=project.us_statuses.get(name=statuses[card['idList']]['name']),
                 kanban_order=card['pos'],
                 sprint_order=card['pos'],
@@ -189,6 +214,12 @@ class TrelloImporter:
                 tags=tags
             )
 
+            if len(card['idMembers']) > 1:
+                for watcher in card['idMembers'][1:]:
+                    watcher_user = users_bindings.get(watcher, None)
+                    if watcher_user:
+                        us.add_watcher(watcher_user)
+
             if card['due']:
                 us.custom_attributes_values.attributes_values = {due_date_field.id: card['due']}
                 us.custom_attributes_values.save()
@@ -197,9 +228,9 @@ class TrelloImporter:
                 modified_date=card['dateLastActivity'],
                 created_date=card['dateLastActivity']
             )
-            self._import_attachments(us, card)
+            self._import_attachments(us, card, options)
             self._import_tasks(data, us, card)
-            self._import_actions(us, card, statuses)
+            self._import_actions(us, card, statuses, options)
 
     def _import_tasks(self, data, us, card):
         checklists_by_id = {c['id']: c for c in data['checklists']}
@@ -212,13 +243,14 @@ class TrelloImporter:
                     user_story=us
                 )
 
-    def _import_attachments(self, us, card):
+    def _import_attachments(self, us, card, options):
+        users_bindings = options.get('users_bindings', {})
         for attachment in card['attachments']:
             if attachment['bytes'] is None:
                 continue
             data = requests.get(attachment['url'])
             att = Attachment(
-                owner=self._user,
+                owner=users_bindings.get(attachment['idMember'], self._user),
                 project=us.project,
                 content_type=ContentType.objects.get_for_model(UserStory),
                 object_id=us.id,
@@ -233,7 +265,7 @@ class TrelloImporter:
                 created_date=attachment['date']
             )
 
-    def _import_actions(self, us, card, statuses):
+    def _import_actions(self, us, card, statuses, options):
         included_actions = [
             "addAttachmentToCard", "addMemberToCard", "commentCard",
             "convertToCardFromCheckItem", "copyCommentCard", "createCard",
@@ -255,7 +287,7 @@ class TrelloImporter:
         typename = get_typename_for_model_class(UserStory)
         while actions:
             for action in actions:
-                action_data = self._import_action(us, action, statuses)
+                action_data = self._import_action(us, action, statuses, options)
                 if action_data is None:
                     continue
 
@@ -295,7 +327,8 @@ class TrelloImporter:
                 }
             )
 
-    def _import_action(self, us, action, statuses):
+    def _import_action(self, us, action, statuses, options):
+        users_bindings = options.get('users_bindings', {})
         due_date_field = us.project.userstorycustomattributes.first()
 
         ignored_actions = ["addAttachmentToCard", "addMemberToCard",
@@ -305,29 +338,37 @@ class TrelloImporter:
         if action['type'] in ignored_actions:
             return None
 
+        user = {"pk": None, "name": action.get('memberCreator', {}).get('fullName', None)}
+        taiga_user = users_bindings.get(action.get('memberCreator', {}).get('id', None), None)
+        if taiga_user:
+            user = {"pk": taiga_user.id, "name": taiga_user.get_full_name()}
+
         result = {
             "change_old": {},
             "change_new": {},
             "hist_type": HistoryType.change,
             "comment": "",
-            "user": {"pk": None, "name": action.get('memberCreator', {}).get('fullName', None)},
+            "user": user
         }
 
         if action['type'] == "commentCard":
             result['comment'] = str(action['data']['text'])
         elif action['type'] == "convertToCardFromCheckItem":
             UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                created_date=action['date']
+                created_date=action['date'],
+                owner=users_bindings.get(action["idMemberCreator"], self._user)
             )
             result['hist_type'] = HistoryType.create
         elif action['type'] == "copyCommentCard":
             UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                created_date=action['date']
+                created_date=action['date'],
+                owner=users_bindings.get(action["idMemberCreator"], self._user)
             )
             result['hist_type'] = HistoryType.create
         elif action['type'] == "createCard":
             UserStory.objects.filter(id=us.id, created_date__gt=action['date']).update(
-                created_date=action['date']
+                created_date=action['date'],
+                owner=users_bindings.get(action["idMemberCreator"], self._user)
             )
             result['hist_type'] = HistoryType.create
         elif action['type'] == "updateCard":
