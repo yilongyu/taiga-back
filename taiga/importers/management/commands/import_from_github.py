@@ -18,6 +18,7 @@
 
 from django.core.management.base import BaseCommand
 from django.conf import settings
+from django.db.models import Q
 
 from taiga.importers.github import GithubImporter
 from taiga.users.models import User, AuthData
@@ -31,12 +32,15 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--token', dest="token", type=str,
                             help='Auth token')
-        parser.add_argument('--project_id', dest="project_id", type=str,
+        parser.add_argument('--project-id', dest="project_id", type=str,
                             help='Project ID or full name (ex: taigaio/taiga-back)')
         parser.add_argument('--template', dest='template', default="kanban",
                             help='template to use: scrum or kanban (default kanban)')
         parser.add_argument('--type', dest='type', default="user_stories",
                             help='type of object to use: user_stories or issues (default user_stories)')
+        parser.add_argument('--ask-for-users', dest='ask_for_users', const=True,
+                            action="store_const", default=False,
+                            help='Import closed data')
 
     def handle(self, *args, **options):
         admin = User.objects.get(username="admin")
@@ -62,8 +66,33 @@ class Command(BaseCommand):
                 print("- {}: {}".format(project['id'], project['name']))
             project_id = input("Project id: ")
 
-        project = importer.import_project(project_id, {"template": options.get('template'), "type": options.get('type')})
-        if options.get('type') == "user_stories":
-            importer.import_user_stories(project, project_id)
-        elif options.get('type') == "issues":
-            importer.import_issues(project, project_id)
+        users_bindings = {}
+        if options.get('ask_for_users', None):
+            print("Add the username or email for next github users:")
+
+        for user in importer.list_users(project_id):
+            while True:
+                if user['detected_user'] is not None:
+                    print("User automatically detected: {} as {}".format(user['full_name'], user['detected_user']))
+                    users_bindings[user['id']] = user['detected_user']
+                    break
+
+                if not options.get('ask_for_users', False):
+                    break
+
+                username_or_email = input("{}: ".format(user['full_name']))
+                if username_or_email == "":
+                    break
+                try:
+                    users_bindings[user['id']] = User.objects.get(Q(username=username_or_email) | Q(email=username_or_email))
+                    break
+                except User.DoesNotExist:
+                    print("ERROR: Invalid username or email")
+
+        options = {
+            "template": options.get('template'),
+            "type": options.get('type'),
+            "users_bindings": users_bindings
+        }
+
+        importer.import_project(project_id, options)

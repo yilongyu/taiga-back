@@ -68,6 +68,15 @@ def make_reference(instance, project, create=False):
     return refval, refinstance
 
 
+def recalc_reference_counter(project):
+    seqname = make_sequence_name(project)
+    max_ref_us = project.user_stories.all().aggregate(max=models.Max('ref'))
+    max_ref_task = project.tasks.all().aggregate(max=models.Max('ref'))
+    max_ref_issue = project.issues.all().aggregate(max=models.Max('ref'))
+    max_value = max(filter(lambda x: x is not None, [max_ref_us['max'], max_ref_task['max'], max_ref_issue['max']]))
+    seq.set_max(seqname, max_value)
+
+
 def create_sequence(sender, instance, created, **kwargs):
     if not created:
         return
