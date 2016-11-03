@@ -32,7 +32,7 @@ class GithubImporter:
 
     def list_users(self, project_id):
         repo = self._client.get_repo(project_id)
-        return [{"id": u.id, "full_name": u.name, "detected_user": self._get_user(u)} for u in repo.get_collaborators()]
+        return [{"id": u.id, "username": u.login, "full_name": u.name, "detected_user": self._get_user(u)} for u in repo.get_collaborators()]
 
     def _get_user(self, user, default=None):
         if not user:

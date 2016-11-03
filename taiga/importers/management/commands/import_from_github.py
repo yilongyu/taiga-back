@@ -80,7 +80,7 @@ class Command(BaseCommand):
                 if not options.get('ask_for_users', False):
                     break
 
-                username_or_email = input("{}: ".format(user['full_name']))
+                username_or_email = input("{}: ".format(user['full_name'] or user['username']))
                 if username_or_email == "":
                     break
                 try:
