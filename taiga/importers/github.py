@@ -153,7 +153,7 @@ class GithubImporter:
 
     def _import_user_stories_data(self, project, repo, options):
         users_bindings = options.get('users_bindings', {})
-        issues = chain(repo.get_issues(state="open")[0:3], repo.get_issues(state="closed")[0:3])
+        issues = chain(repo.get_issues(state="open"), repo.get_issues(state="closed"))
 
         for issue in issues:
             tags = []
