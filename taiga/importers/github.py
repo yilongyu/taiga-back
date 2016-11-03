@@ -2,6 +2,7 @@ import requests
 from urllib.parse import parse_qsl
 from github import Github
 from itertools import chain
+from django.core.files.base import ContentFile
 
 from taiga.projects.models import Project, ProjectTemplate, Membership
 from taiga.projects.references.models import recalc_reference_counter
@@ -123,6 +124,10 @@ class GithubImporter:
             tags_colors=tags_colors,
             creation_template=project_template
         )
+
+        if repo.organization and repo.organization.avatar_url:
+            data = requests.get(repo.organization.avatar_url)
+            project.logo.save("logo.png", ContentFile(data.content), save=True)
 
         for user in repo.get_collaborators():
             taiga_user = users_bindings.get(user.id, None)
