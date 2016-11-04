@@ -41,6 +41,9 @@ class Command(BaseCommand):
         parser.add_argument('--closed-data', dest='closed_data', const=True,
                             action="store_const", default=False,
                             help='Import closed data')
+        parser.add_argument('--keep-external-reference', dest='keep_external_reference', const=True,
+                            action="store_const", default=False,
+                            help='Store external reference of imported data')
 
     def handle(self, *args, **options):
         admin = User.objects.get(username="admin")
@@ -79,6 +82,7 @@ class Command(BaseCommand):
         options = {
             "template": options.get('template'),
             "import_closed_data": options.get("closed_data", False),
-            "users_bindings": users_bindings
+            "users_bindings": users_bindings,
+            "keep_external_reference": options.get('keep_external_reference')
         }
         importer.import_project(project_id, options)

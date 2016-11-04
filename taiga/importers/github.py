@@ -51,7 +51,7 @@ class GithubImporter:
 
         return default
 
-    def import_project(self, project_id, options={"template": "kanban", "type": "user_stories"}):
+    def import_project(self, project_id, options={"keep_external_reference": False, "template": "kanban", "type": "user_stories"}):
         repo = self._client.get_repo(project_id)
         project = self._import_project_data(repo, options)
         if options.get('type', None) == "user_stories":
@@ -166,6 +166,11 @@ class GithubImporter:
                 tags.append(label.name.lower())
 
             assigned_to = users_bindings.get(issue.assignee.id, None) if issue.assignee else None
+
+            external_reference = None
+            if options.get('keep_external_reference', False):
+                external_reference = ["github", issue.html_url]
+
             us = UserStory.objects.create(
                 project=project,
                 owner=users_bindings.get(issue.user.id, self._user),
@@ -177,7 +182,8 @@ class GithubImporter:
                 backlog_order=issue.number,
                 subject=issue.title,
                 description=issue.body or "",
-                tags=tags
+                tags=tags,
+                external_reference=external_reference
             )
 
             assignees = issue.raw_data.get('assignees', [])
@@ -208,6 +214,11 @@ class GithubImporter:
                 tags.append(label.name.lower())
 
             assigned_to = users_bindings.get(issue.assignee.id, None) if issue.assignee else None
+
+            external_reference = None
+            if options.get('keep_external_reference', False):
+                external_reference = ["github", issue.html_url]
+
             taiga_issue = Issue.objects.create(
                 project=project,
                 owner=users_bindings.get(issue.user.id, self._user),
@@ -215,7 +226,8 @@ class GithubImporter:
                 status=project.issue_statuses.get(slug=issue.state),
                 subject=issue.title,
                 description=issue.body or "",
-                tags=tags
+                tags=tags,
+                external_reference=external_reference
             )
 
             assignees = issue.raw_data.get('assignees', [])
@@ -249,9 +261,6 @@ class GithubImporter:
             HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment.created_at)
 
     def _import_history(self, obj, issue, options):
-        key = make_key_from_model_object(obj)
-        typename = get_typename_for_model_class(UserStory)
-
         cumulative_data = {
             "tags": set(),
             "assigned_to": None,
@@ -260,36 +269,40 @@ class GithubImporter:
             "milestone": None,
         }
         for event in issue.get_events():
-            event_data = self._import_event(obj, event, options, cumulative_data)
-            if event_data is None:
-                continue
-
-            change_old = event_data['change_old']
-            change_new = event_data['change_new']
-            hist_type = event_data['hist_type']
-            comment = event_data['comment']
-            user = event_data['user']
-
-            diff = make_diff_from_dicts(change_old, change_new)
-            fdiff = FrozenDiff(key, diff, {})
-            values = make_diff_values(typename, fdiff)
-            values.update(event_data['update_values'])
-            entry = HistoryEntry.objects.create(
-                user=user,
-                project_id=obj.project.id,
-                key=key,
-                type=hist_type,
-                snapshot=None,
-                diff=fdiff.diff,
-                values=values,
-                comment=comment,
-                comment_html=mdrender(obj.project, comment),
-                is_hidden=False,
-                is_snapshot=False,
-            )
-            HistoryEntry.objects.filter(id=entry.id).update(created_at=event.created_at)
+            self._import_event(obj, event, options, cumulative_data)
 
     def _import_event(self, obj, event, options, cumulative_data):
+        typename = get_typename_for_model_class(UserStory)
+        key = make_key_from_model_object(obj)
+        event_data = self._transform_event_data(obj, event, options, cumulative_data)
+        if event_data is None:
+            return
+
+        change_old = event_data['change_old']
+        change_new = event_data['change_new']
+        user = event_data['user']
+
+        diff = make_diff_from_dicts(change_old, change_new)
+        fdiff = FrozenDiff(key, diff, {})
+        values = make_diff_values(typename, fdiff)
+        values.update(event_data['update_values'])
+        entry = HistoryEntry.objects.create(
+            user=user,
+            project_id=obj.project.id,
+            key=key,
+            type=HistoryType.change,
+            snapshot=None,
+            diff=fdiff.diff,
+            values=values,
+            comment="",
+            comment_html="",
+            is_hidden=False,
+            is_snapshot=False,
+        )
+        HistoryEntry.objects.filter(id=entry.id).update(created_at=event.created_at)
+        return HistoryEntry.objects.get(id=entry.id)
+
+    def _transform_event_data(self, obj, event, options, cumulative_data):
         users_bindings = options.get('users_bindings', {})
 
         ignored_events = ["committed", "cross-referenced", "head_ref_deleted",
@@ -308,8 +321,6 @@ class GithubImporter:
         result = {
             "change_old": {},
             "change_new": {},
-            "hist_type": HistoryType.change,
-            "comment": "",
             "user": user,
             "update_values": {},
         }

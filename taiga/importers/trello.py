@@ -66,13 +66,13 @@ class TrelloImporter:
     def list_users(self, project_id):
         return self._client.get("/board/{}/members".format(project_id), {"fields": "id,fullName"})
 
-    def import_project(self, project_id, options={"template": "kanban", "import_closed_data": False, "users_bindings": {}}):
+    def import_project(self, project_id, options={"template": "kanban", "import_closed_data": False, "users_bindings": {}, "keep_external_reference": False}):
         data = self._client.get(
             "/board/{}".format(project_id),
             {
                 "fields": "name,desc",
                 "cards": "all",
-                "card_fields": "closed,labels,idList,desc,due,name,pos,dateLastActivity,idChecklists,idMembers",
+                "card_fields": "closed,labels,idList,desc,due,name,pos,dateLastActivity,idChecklists,idMembers,url",
                 "card_attachments": "true",
                 "labels": "all",
                 "labels_limit": "1000",
@@ -201,6 +201,11 @@ class TrelloImporter:
             if len(card['idMembers']) > 0:
                 assigned_to = users_bindings.get(card['idMembers'][0], None)
 
+            external_reference = None
+            if options.get('keep_external_reference', False):
+                import pprint; pprint.pprint(card)
+                external_reference = ["trello", card['url']]
+
             us = UserStory.objects.create(
                 project=project,
                 owner=self._user,
@@ -211,7 +216,8 @@ class TrelloImporter:
                 backlog_order=card['pos'],
                 subject=card['name'],
                 description=card['desc'],
-                tags=tags
+                tags=tags,
+                external_reference=external_reference
             )
 
             if len(card['idMembers']) > 1:
@@ -283,38 +289,9 @@ class TrelloImporter:
             }
         )
 
-        key = make_key_from_model_object(us)
-        typename = get_typename_for_model_class(UserStory)
         while actions:
             for action in actions:
-                action_data = self._import_action(us, action, statuses, options)
-                if action_data is None:
-                    continue
-
-                change_old = action_data['change_old']
-                change_new = action_data['change_new']
-                hist_type = action_data['hist_type']
-                comment = action_data['comment']
-                user = action_data['user']
-
-                diff = make_diff_from_dicts(change_old, change_new)
-                fdiff = FrozenDiff(key, diff, {})
-
-                entry = HistoryEntry.objects.create(
-                    user=user,
-                    project_id=us.project.id,
-                    key=key,
-                    type=hist_type,
-                    snapshot=None,
-                    diff=fdiff.diff,
-                    values=make_diff_values(typename, fdiff),
-                    comment=comment,
-                    comment_html=mdrender(us.project, comment),
-                    is_hidden=False,
-                    is_snapshot=False,
-                )
-                HistoryEntry.objects.filter(id=entry.id).update(created_at=action['date'])
-
+                self._import_action(us, action, statuses, options)
             actions = self._client.get(
                 "/card/{}/actions".format(card['id']),
                 {
@@ -328,6 +305,38 @@ class TrelloImporter:
             )
 
     def _import_action(self, us, action, statuses, options):
+        key = make_key_from_model_object(us)
+        typename = get_typename_for_model_class(UserStory)
+        action_data = self._transform_action_data(us, action, statuses, options)
+        if action_data is None:
+            return
+
+        change_old = action_data['change_old']
+        change_new = action_data['change_new']
+        hist_type = action_data['hist_type']
+        comment = action_data['comment']
+        user = action_data['user']
+
+        diff = make_diff_from_dicts(change_old, change_new)
+        fdiff = FrozenDiff(key, diff, {})
+
+        entry = HistoryEntry.objects.create(
+            user=user,
+            project_id=us.project.id,
+            key=key,
+            type=hist_type,
+            snapshot=None,
+            diff=fdiff.diff,
+            values=make_diff_values(typename, fdiff),
+            comment=comment,
+            comment_html=mdrender(us.project, comment),
+            is_hidden=False,
+            is_snapshot=False,
+        )
+        HistoryEntry.objects.filter(id=entry.id).update(created_at=action['date'])
+        return HistoryEntry.objects.get(id=entry.id)
+
+    def _transform_action_data(self, us, action, statuses, options):
         users_bindings = options.get('users_bindings', {})
         due_date_field = us.project.userstorycustomattributes.first()
 
