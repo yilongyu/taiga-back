@@ -1,5 +1,6 @@
 import requests
 import asana
+import json
 from django.core.files.base import ContentFile
 from django.contrib.contenttypes.models import ContentType
 
@@ -9,6 +10,7 @@ from taiga.projects.tasks.models import Task
 from taiga.projects.attachments.models import Attachment
 from taiga.projects.history.services import take_snapshot
 from taiga.projects.history.models import HistoryEntry
+from taiga.projects.custom_attributes.models import UserStoryCustomAttribute, TaskCustomAttribute
 from taiga.users.models import User
 
 
@@ -16,7 +18,7 @@ class AsanaImporter:
     def __init__(self, user, token, import_closed_data=False):
         self._import_closed_data = import_closed_data
         self._user = user
-        print(token)
+        print(json.dumps(token))
         self._client = asana.Client.oauth(token=token)
 
     def list_projects(self):
@@ -130,6 +132,22 @@ class AsanaImporter:
                 invited_by=self._user,
             )
 
+        UserStoryCustomAttribute.objects.create(
+            name="Due",
+            description="Due date",
+            type="date",
+            order=1,
+            project=taiga_project
+        )
+
+        TaskCustomAttribute.objects.create(
+            name="Due",
+            description="Due date",
+            type="date",
+            order=1,
+            project=taiga_project
+        )
+
         return taiga_project
 
     def _import_user_stories_data(self, taiga_project, project, options):
@@ -138,8 +156,9 @@ class AsanaImporter:
             project['id'],
             fields=["parent", "tags", "name", "notes", "tags.name",
                     "completed", "followers", "modified_at", "created_at",
-                    "project"]
+                    "project", "due_on"]
         )
+        due_date_field = taiga_project.userstorycustomattributes.first()
 
         for task in tasks:
             if task['parent']:
@@ -173,6 +192,10 @@ class AsanaImporter:
                 external_reference=external_reference
             )
 
+            if task['due_on']:
+                us.custom_attributes_values.attributes_values = {due_date_field.id: task['due_on']}
+                us.custom_attributes_values.save()
+
             for follower in task['followers']:
                 follower_user = users_bindings.get(follower['id'], None)
                 if follower_user is not None:
@@ -186,7 +209,8 @@ class AsanaImporter:
             subtasks = self._client.tasks.subtasks(
                 task['id'],
                 fields=["parent", "tags", "name", "notes", "tags.name",
-                        "completed", "followers", "modified_at", "created_at"]
+                        "completed", "followers", "modified_at", "created_at",
+                        "due_on"]
             )
             for subtask in subtasks:
                 self._import_task_data(taiga_project, us, project, subtask, options)
@@ -200,6 +224,7 @@ class AsanaImporter:
         tags = []
         for tag in task['tags']:
             tags.append(tag['name'].lower())
+        due_date_field = taiga_project.taskcustomattributes.first()
 
         assigned_to = users_bindings.get(task.get('assignee', {}).get('id', None)) or None
 
@@ -225,6 +250,10 @@ class AsanaImporter:
             external_reference=external_reference
         )
 
+        if task['due_on']:
+            taiga_task.custom_attributes_values.attributes_values = {due_date_field.id: task['due_on']}
+            taiga_task.custom_attributes_values.save()
+
         for follower in task['followers']:
             follower_user = users_bindings.get(follower['id'], None)
             if follower_user is not None:
@@ -234,6 +263,15 @@ class AsanaImporter:
             modified_date=task['modified_at'],
             created_date=task['created_at']
         )
+
+        subtasks = self._client.tasks.subtasks(
+            task['id'],
+            fields=["parent", "tags", "name", "notes", "tags.name",
+                    "completed", "followers", "modified_at", "created_at",
+                    "due_on"]
+        )
+        for subtask in subtasks:
+            self._import_task_data(taiga_project, us, assana_project, subtask, options)
 
         take_snapshot(taiga_task, comment="", user=None, delete=False)
         self._import_history(taiga_task, task, options)
