@@ -133,7 +133,7 @@ class AsanaImporter:
             )
 
         UserStoryCustomAttribute.objects.create(
-            name="Due",
+            name="Due date",
             description="Due date",
             type="date",
             order=1,
@@ -141,7 +141,7 @@ class AsanaImporter:
         )
 
         TaskCustomAttribute.objects.create(
-            name="Due",
+            name="Due date",
             description="Due date",
             type="date",
             order=1,
