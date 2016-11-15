@@ -20,7 +20,7 @@ from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.conf import settings
 
-from taiga.importers.jira import JiraImporter
+from taiga.importers.jira_agile import JiraImporter
 from taiga.users.models import User
 from taiga.projects.services import projects as service
 
@@ -70,8 +70,8 @@ class Command(BaseCommand):
             project_id = options.get('project_id')
         else:
             print("Select the project to import:")
-            for project in importer.list_projects():
-                print("- {} ({}): {}".format(project['id'], project['key'], project['name']))
+            for project in importer.list_projects()['values']:
+                print("- {}: {}".format(project['id'], project['name']))
             project_id = input("Project id or key: ")
 
         users_bindings = {}
@@ -94,33 +94,10 @@ class Command(BaseCommand):
                     except User.DoesNotExist:
                         print("ERROR: Invalid username or email")
 
-        print("Bind jira issue types to (epic, us, issue)")
-        types_bindings = {
-            "epic": [],
-            "us": [],
-            "task": [],
-            "issue": [],
-        }
-
-        for issue_type in importer.list_issue_types(project_id):
-            while True:
-                if issue_type['subtask']:
-                    types_bindings['task'].append(issue_type)
-                    break
-
-                taiga_type = input("{}: ".format(issue_type['name']))
-                if taiga_type not in ['epic', 'us', 'issue']:
-                    print("use a valid taiga type (epic, us, issue)")
-                    continue
-
-                types_bindings[taiga_type].append(issue_type)
-                break
-
         options = {
             "template": options.get('template'),
             "import_closed_data": options.get("closed_data", False),
             "users_bindings": users_bindings,
             "keep_external_reference": options.get('keep_external_reference'),
-            "types_bindings": types_bindings,
         }
         importer.import_project(project_id, options)
