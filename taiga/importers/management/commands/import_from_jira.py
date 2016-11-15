@@ -20,7 +20,8 @@ from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.conf import settings
 
-from taiga.importers.jira import JiraImporter
+from taiga.importers.jira.agile import JiraAgileImporter
+from taiga.importers.jira.normal import JiraNormalImporter
 from taiga.users.models import User
 from taiga.projects.services import projects as service
 
@@ -35,6 +36,8 @@ class Command(BaseCommand):
                             help='Auth token')
         parser.add_argument('--project-id', dest="project_id", type=str,
                             help='Project ID or full name (ex: taigaio/taiga-back)')
+        parser.add_argument('--project-type', dest="project_type", type=str,
+                            help='Project type in jira: project or board')
         parser.add_argument('--template', dest='template', default="scrum",
                             help='template to use: scrum or scrum (default scrum)')
         parser.add_argument('--ask-for-users', dest='ask_for_users', const=True,
@@ -64,63 +67,79 @@ class Command(BaseCommand):
             code = input("Go to the url and get back the code")
             token = JiraImporter.get_access_token(server, "tribe-consumer", key_cert_data, rtoken, rtoken_secret, True)
 
-        importer = JiraImporter(admin, server, token)
+
+        if options.get('project_type', None) is None:
+            print("Select the type of project to import (project or board): ")
+            project_type = input("Project type: ")
+        else:
+            project_type = options.get('project_type')
+
+        if project_type not in ["project", "board"]:
+            print("ERROR: Bad project type.")
+            return
+
+        if project_type == "project":
+            importer = JiraNormalImporter(admin, server, token)
+        else:
+            importer = JiraAgileImporter(admin, server, token)
 
         if options.get('project_id', None):
             project_id = options.get('project_id')
         else:
             print("Select the project to import:")
             for project in importer.list_projects():
-                print("- {} ({}): {}".format(project['id'], project['key'], project['name']))
+                print("- {}: {}".format(project['id'], project['name']))
             project_id = input("Project id or key: ")
 
         users_bindings = {}
         if options.get('ask_for_users', None):
             print("Add the username or email for next jira users:")
-            for user in importer.list_users(project_id):
+            for user in importer.list_users():
                 try:
-                    users_bindings[user['id']] = User.objects.get(Q(email=user['person']['email']))
+                    users_bindings[user['key']] = User.objects.get(Q(email=user['email']))
                     break
                 except User.DoesNotExist:
                     pass
 
                 while True:
-                    username_or_email = input("{}: ".format(user['person']['name']))
+                    username_or_email = input("{}: ".format(user['full_name']))
                     if username_or_email == "":
                         break
                     try:
-                        users_bindings[user['id']] = User.objects.get(Q(username=username_or_email) | Q(email=username_or_email))
+                        users_bindings[user['key']] = User.objects.get(Q(username=username_or_email) | Q(email=username_or_email))
                         break
                     except User.DoesNotExist:
                         print("ERROR: Invalid username or email")
-
-        print("Bind jira issue types to (epic, us, issue)")
-        types_bindings = {
-            "epic": [],
-            "us": [],
-            "task": [],
-            "issue": [],
-        }
-
-        for issue_type in importer.list_issue_types(project_id):
-            while True:
-                if issue_type['subtask']:
-                    types_bindings['task'].append(issue_type)
-                    break
-
-                taiga_type = input("{}: ".format(issue_type['name']))
-                if taiga_type not in ['epic', 'us', 'issue']:
-                    print("use a valid taiga type (epic, us, issue)")
-                    continue
-
-                types_bindings[taiga_type].append(issue_type)
-                break
 
         options = {
             "template": options.get('template'),
             "import_closed_data": options.get("closed_data", False),
             "users_bindings": users_bindings,
             "keep_external_reference": options.get('keep_external_reference'),
-            "types_bindings": types_bindings,
         }
+
+        if project_type == "project":
+            print("Bind jira issue types to (epic, us, issue)")
+            types_bindings = {
+                "epic": [],
+                "us": [],
+                "task": [],
+                "issue": [],
+            }
+
+            for issue_type in importer.list_issue_types(project_id):
+                while True:
+                    if issue_type['subtask']:
+                        types_bindings['task'].append(issue_type)
+                        break
+
+                    taiga_type = input("{}: ".format(issue_type['name']))
+                    if taiga_type not in ['epic', 'us', 'issue']:
+                        print("use a valid taiga type (epic, us, issue)")
+                        continue
+
+                    types_bindings[taiga_type].append(issue_type)
+                    break
+            options["types_bindings"] = types_bindings
+
         importer.import_project(project_id, options)

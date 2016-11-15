@@ -33,7 +33,6 @@ from taiga.projects.custom_attributes.models import (UserStoryCustomAttribute,
                                                      EpicCustomAttribute)
 from taiga.mdrender.service import render as mdrender
 
-
 EPIC_COLORS = {
     "ghx-label-0": "#ffffff",
     "ghx-label-1": "#815b3a",
@@ -46,7 +45,6 @@ EPIC_COLORS = {
     "ghx-label-8": "#654982",
     "ghx-label-9": "#f15c75",
 }
-
 
 class JiraClient:
     def __init__(self, server, oauth):
@@ -115,371 +113,29 @@ class JiraClient:
         return response.content
 
 
-class JiraImporter:
+
+class JiraImporterCommon:
     def __init__(self, user, server, oauth):
         self._user = user
         self._client = JiraClient(server=server, oauth=oauth)
 
-    def list_projects(self):
-        return self._client.get('/board')
-
-    def list_users(self, project_id):
-        project = self._client.get("/board/{}".format(project_id))
-        return project
-
-    def import_project(self, project_id, options={"template": "scrum", "users_bindings": {}, "keep_external_reference": False}):
-        project = self._import_project_data(project_id, options)
-        self._import_epics_data(project_id, project, options)
-        self._import_user_stories_data(project_id, project, options)
-
-    def _import_project_data(self, project_id, options):
-        project = self._client.get("/board/{}".format(project_id))
-        project_config = self._client.get("/board/{}/configuration".format(project_id))
-        project_template = ProjectTemplate.objects.get(slug=options['template'])
-
-        project_template.is_epics_activated = True
-        project_template.epic_statuses = []
-        project_template.us_statuses = []
-        project_template.task_statuses = []
-        project_template.issue_statuses = []
-
-        counter = 0
-        for column in project_config['columnConfig']['columns']:
-            project_template.epic_statuses.append({
-                "name": column['name'],
-                "slug": slugify(column['name']),
-                "is_closed": False,
-                "is_archived": False,
-                "color": "#999999",
-                "wip_limit": None,
-                "order": counter,
+    def list_users(self):
+        result = []
+        users = self._client.get_main_api("/user/picker", {
+            "query": "@",
+            "maxResults": 1000,
+        })
+        for user in users['users']:
+            user_data = self._client.get_main_api("/user", {
+                "key": user['key']
             })
-            project_template.us_statuses.append({
-                "name": column['name'],
-                "slug": slugify(column['name']),
-                "is_closed": False,
-                "is_archived": False,
-                "color": "#999999",
-                "wip_limit": None,
-                "order": counter,
+            result.append({
+                "key": user_data['key'],
+                "full_name": user_data['displayName'],
+                "email": user_data['emailAddress'],
             })
-            project_template.task_statuses.append({
-                "name": column['name'],
-                "slug": slugify(column['name']),
-                "is_closed": False,
-                "is_archived": False,
-                "color": "#999999",
-                "wip_limit": None,
-                "order": counter,
-            })
-            project_template.issue_statuses.append({
-                "name": column['name'],
-                "slug": slugify(column['name']),
-                "is_closed": False,
-                "is_archived": False,
-                "color": "#999999",
-                "wip_limit": None,
-                "order": counter,
-            })
-            counter += 1
+        return result
 
-        project_template.default_options["epic_status"] = project_template.epic_statuses[0]['name']
-        project_template.default_options["us_status"] = project_template.us_statuses[0]['name']
-        project_template.default_options["task_status"] = project_template.task_statuses[0]['name']
-        project_template.default_options["issue_status"] = project_template.issue_statuses[0]['name']
-
-        project_template.points = [{
-            "value": None,
-            "name": "?",
-            "order": 0,
-        }]
-
-        main_permissions = project_template.roles[0]['permissions']
-        project_template.roles = [{
-            "name": "Main",
-            "slug": "main",
-            "computable": True,
-            "permissions": main_permissions,
-            "order": 70,
-        }]
-
-        project = Project.objects.create(
-            name=project['name'],
-            description=project.get('description', ''),
-            owner=self._user,
-            creation_template=project_template
-        )
-
-        for model in [UserStoryCustomAttribute, TaskCustomAttribute, IssueCustomAttribute, EpicCustomAttribute]:
-            model.objects.create(
-                name="Due date",
-                description="Due date",
-                type="date",
-                order=1,
-                project=project
-            )
-            model.objects.create(
-                name="Priority",
-                description="Priority",
-                type="text",
-                order=1,
-                project=project
-            )
-
-        # for user in options.get('users_bindings', {}).values():
-        #     if user != self._user:
-        #         Membership.objects.get_or_create(
-        #             user=user,
-        #             project=project,
-        #             role=project.get_roles().get(slug="main"),
-        #             is_admin=False,
-        #         )
-        #
-        for sprint in self._client.get("/board/{}/sprint".format(project_id))['values']:
-            start_datetime = sprint.get('startDate', None)
-            end_datetime = sprint.get('startDate', None)
-            start_date = datetime.date.today()
-            if start_datetime:
-                start_date = start_datetime[:10]
-            end_date = datetime.date.today()
-            if end_datetime:
-                end_date = end_datetime[:10]
-
-            milestone = Milestone.objects.create(
-                name=sprint['name'],
-                slug=slugify(sprint['name']),
-                owner=self._user,
-                project=project,
-                estimated_start=start_date,
-                estimated_finish=end_date,
-            )
-            Milestone.objects.filter(id=milestone.id).update(
-                created_date=start_datetime or datetime.datetime.now(),
-                modified_date=start_datetime or datetime.datetime.now(),
-            )
-        return project
-
-    def _import_user_stories_data(self, project_id, project, options):
-        users_bindings = options.get('users_bindings', {})
-        due_date_field = project.userstorycustomattributes.get(name="Due date")
-        priority_field = project.userstorycustomattributes.get(name="Priority")
-        project_conf = self._client.get("/board/{}/configuration".format(project_id))
-        estimation_field = project_conf['estimation']['field']['fieldId']
-
-        counter = 0
-        offset = 0
-        while True:
-            issues = self._client.get("/board/{}/issue".format(project_id), {
-                "startAt": offset,
-                "expand": "changelog",
-            })
-            offset += issues['maxResults']
-
-            for issue in issues['issues']:
-                assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
-                owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
-
-                external_reference = None
-                if options.get('keep_external_reference', False):
-                    external_reference = ["jira", issue['fields']['url']]
-
-                try:
-                    milestone = project.milestones.get(name=issue['fields'].get('sprint', {}).get('name', ''))
-                except Milestone.DoesNotExist:
-                    milestone = None
-
-                us = UserStory.objects.create(
-                    project=project,
-                    owner=owner,
-                    assigned_to=assigned_to,
-                    status=project.us_statuses.get(name=issue['fields']['status']['name']),
-                    kanban_order=counter,
-                    sprint_order=counter,
-                    backlog_order=counter,
-                    subject=issue['fields']['summary'],
-                    description=issue['fields']['description'] or '',
-                    tags=issue['fields']['labels'],
-                    external_reference=external_reference,
-                    milestone=milestone,
-                )
-
-                try:
-                    epic = project.epics.get(ref=int(issue['fields'].get("epic", {}).get("key", "FAKE-0").split("-")[1]))
-                    RelatedUserStory.objects.create(
-                        user_story=us,
-                        epic=epic,
-                        order=1
-                    )
-                except Epic.DoesNotExist:
-                    pass
-
-                estimation = None
-                if issue['fields'].get(estimation_field, None):
-                    estimation = float(issue['fields'].get(estimation_field))
-
-                (points, _) = Points.objects.get_or_create(
-                    project=project,
-                    value=estimation,
-                    defaults={
-                        "name": str(estimation),
-                        "order": estimation,
-                    }
-                )
-                RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
-
-                if issue['fields']['duedate'] or issue['fields']['priority']:
-                    custom_attributes_values = {}
-                    if issue['fields']['duedate']:
-                        custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                    if issue['fields']['priority']:
-                        custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                    us.custom_attributes_values.attributes_values = custom_attributes_values
-                    us.custom_attributes_values.save()
-
-                us.ref = issue['key'].split("-")[1]
-                UserStory.objects.filter(id=us.id).update(
-                    ref=us.ref,
-                    modified_date=issue['fields']['updated'],
-                    created_date=issue['fields']['created']
-                )
-                take_snapshot(us, comment="", user=None, delete=False)
-                self._import_subtasks(project_id, project, us, issue, options)
-                self._import_comments(us, issue, options)
-                self._import_attachments(us, issue, options)
-                self._import_changelog(project, us, issue, options)
-                counter += 1
-
-            if len(issues['issues']) < issues['maxResults']:
-                break
-
-    def _import_subtasks(self, project_id, project, us, issue, options):
-        users_bindings = options.get('users_bindings', {})
-        due_date_field = project.taskcustomattributes.get(name="Due date")
-        priority_field = project.taskcustomattributes.get(name="Priority")
-
-        if len(issue['fields']['subtasks']) == 0:
-            return
-
-        counter = 0
-        offset = 0
-        while True:
-            issues = self._client.get("/board/{}/issue".format(project_id), {
-                "jql": "parent={}".format(issue['key']),
-                "startAt": offset,
-                "expand": "changelog",
-            })
-            offset += issues['maxResults']
-
-            for issue in issues['issues']:
-                assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
-                owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
-
-                external_reference = None
-                if options.get('keep_external_reference', False):
-                    external_reference = ["jira", issue['fields']['url']]
-
-                task = Task.objects.create(
-                    user_story=us,
-                    project=project,
-                    owner=owner,
-                    assigned_to=assigned_to,
-                    status=project.task_statuses.get(name=issue['fields']['status']['name']),
-                    subject=issue['fields']['summary'],
-                    description=issue['fields']['description'] or '',
-                    tags=issue['fields']['labels'],
-                    external_reference=external_reference,
-                    milestone=us.milestone,
-                )
-
-                if issue['fields']['duedate'] or issue['fields']['priority']:
-                    custom_attributes_values = {}
-                    if issue['fields']['duedate']:
-                        custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                    if issue['fields']['priority']:
-                        custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                    task.custom_attributes_values.attributes_values = custom_attributes_values
-                    task.custom_attributes_values.save()
-
-                task.ref = issue['key'].split("-")[1]
-                Task.objects.filter(id=task.id).update(
-                    ref=task.ref,
-                    modified_date=issue['fields']['updated'],
-                    created_date=issue['fields']['created']
-                )
-                take_snapshot(task, comment="", user=None, delete=False)
-                for subtask in issue['fields']['subtasks']:
-                    print("WARNING: Ignoring subtask {} because parent isn't a User Story".format(subtask['key']))
-                self._import_comments(task, issue, options)
-                self._import_attachments(task, issue, options)
-                self._import_changelog(project, task, issue, options)
-                counter += 1
-            if len(issues['issues']) < issues['maxResults']:
-                break
-
-    def _import_epics_data(self, project_id, project, options):
-        users_bindings = options.get('users_bindings', {})
-        due_date_field = project.epiccustomattributes.get(name="Due date")
-        priority_field = project.epiccustomattributes.get(name="Priority")
-
-        counter = 0
-        offset = 0
-        while True:
-            issues = self._client.get("/board/{}/epic".format(project_id), {
-                "startAt": offset,
-            })
-            offset += issues['maxResults']
-
-            for epic in issues['values']:
-                issue = self._client.get("/issue/{}".format(epic['key']))
-                assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
-                owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
-
-                external_reference = None
-                if options.get('keep_external_reference', False):
-                    external_reference = ["jira", issue['fields']['url']]
-
-                epic = Epic.objects.create(
-                    project=project,
-                    owner=owner,
-                    assigned_to=assigned_to,
-                    status=project.epic_statuses.get(name=issue['fields']['status']['name']),
-                    subject=issue['fields']['summary'],
-                    description=issue['fields']['description'] or '',
-                    epics_order=counter,
-                    tags=issue['fields']['labels'],
-                    external_reference=external_reference,
-                )
-
-                if issue['fields']['duedate'] or issue['fields']['priority']:
-                    custom_attributes_values = {}
-                    if issue['fields']['duedate']:
-                        custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                    if issue['fields']['priority']:
-                        custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                    epic.custom_attributes_values.attributes_values = custom_attributes_values
-                    epic.custom_attributes_values.save()
-
-                epic.ref = issue['key'].split("-")[1]
-                Epic.objects.filter(id=epic.id).update(
-                    ref=epic.ref,
-                    modified_date=issue['fields']['updated'],
-                    created_date=issue['fields']['created']
-                )
-
-                take_snapshot(epic, comment="", user=None, delete=False)
-                self._import_attachments(epic, issue, options)
-                for subtask in issue['fields']['subtasks']:
-                    print("WARNING: Ignoring subtask {} because parent isn't a User Story".format(subtask['key']))
-                self._import_comments(epic, issue, options)
-                self._import_attachments(epic, issue, options)
-                issue_with_changelog = self._client.get("/issue/{}".format(issue['key']), {
-                    "expand": "changelog"
-                })
-                self._import_changelog(project, epic, issue_with_changelog, options)
-                counter += 1
-
-            if len(issues['values']) < issues['maxResults']:
-                break
 
     def _import_comments(self, obj, issue, options):
         users_bindings = options.get('users_bindings', {})
@@ -592,8 +248,6 @@ class JiraImporter:
 
         has_data = False
         for history_item in history['items']:
-            if isinstance(obj, Epic):
-                import pprint; pprint.pprint(history_item)
             if history_item['field'] == "Attachment":
                 result['change_old']["attachments"] = []
                 for att in obj.cummulative_attachments:
