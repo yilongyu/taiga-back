@@ -22,6 +22,7 @@ class JiraAgileImporter(JiraImporterCommon):
         project = self._import_project_data(project_id, options)
         self._import_epics_data(project_id, project, options)
         self._import_user_stories_data(project_id, project, options)
+        self._cleanup(project, options)
 
     def _import_project_data(self, project_id, options):
         project = self._client.get_agile("/board/{}".format(project_id))

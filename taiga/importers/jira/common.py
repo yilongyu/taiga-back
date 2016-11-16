@@ -448,6 +448,20 @@ class JiraImporterCommon:
 
         return result
 
+    def _cleanup(self, project, options):
+        for epic_custom_field in project.epiccustomattributes.all():
+            if project.epics.filter(custom_attributes_values__attributes_values__has_key=str(epic_custom_field.id)).count() == 0:
+                epic_custom_field.delete()
+        for us_custom_field in project.userstorycustomattributes.all():
+            if project.user_stories.filter(custom_attributes_values__attributes_values__has_key=str(us_custom_field.id)).count() == 0:
+                us_custom_field.delete()
+        for task_custom_field in project.taskcustomattributes.all():
+            if project.tasks.filter(custom_attributes_values__attributes_values__has_key=str(task_custom_field.id)).count() == 0:
+                task_custom_field.delete()
+        for issue_custom_field in project.issuecustomattributes.all():
+            if project.issues.filter(custom_attributes_values__attributes_values__has_key=str(issue_custom_field.id)).count() == 0:
+                issue_custom_field.delete()
+
     @classmethod
     def get_auth_url(cls, server, consumer_key, key_cert_data, verify=None):
         if verify is None:

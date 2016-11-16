@@ -48,6 +48,7 @@ class JiraNormalImporter(JiraImporterCommon):
         self._import_epics_data(project_id, project, options)
         self._link_epics_with_user_stories(project_id, project, options)
         self._import_issues_data(project_id, project, options)
+        self._cleanup(project, options)
 
     def _import_project_data(self, project_id, options):
         project = self._client.get("/project/{}".format(project_id))
