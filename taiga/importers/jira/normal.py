@@ -187,32 +187,50 @@ class JiraNormalImporter(JiraImporterCommon):
         greenhopper_fields = {}
         for custom_field in self._client.get("/field"):
             if custom_field['custom']:
-                multiline_types = [
-                    "com.atlassian.jira.plugin.system.customfieldtypes:textarea"
-                ]
-                date_types = [
-                    "com.atlassian.jira.plugin.system.customfieldtypes:datepicker"
-                    "com.atlassian.jira.plugin.system.customfieldtypes:datetime"
-                ]
-                if custom_field['schema']['custom'] in multiline_types:
-                    field_type = "multiline"
-                elif custom_field['schema']['custom'] in date_types:
-                    field_type = "date"
+                if custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-sprint":
+                    greenhopper_fields["sprint"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-link":
+                    greenhopper_fields["link"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-status":
+                    greenhopper_fields["status"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-label":
+                    greenhopper_fields["label"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-color":
+                    greenhopper_fields["color"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-lexo-rank":
+                    greenhopper_fields["rank"] = custom_field['id']
+                elif (
+                    custom_field['name'] == "Story Points" and
+                    custom_field['schema']['custom'] == 'com.atlassian.jira.plugin.system.customfieldtypes:float'
+                ):
+                    greenhopper_fields["points"] = custom_field['id']
                 else:
-                    field_type = "text"
+                    multiline_types = [
+                        "com.atlassian.jira.plugin.system.customfieldtypes:textarea"
+                    ]
+                    date_types = [
+                        "com.atlassian.jira.plugin.system.customfieldtypes:datepicker"
+                        "com.atlassian.jira.plugin.system.customfieldtypes:datetime"
+                    ]
+                    if custom_field['schema']['custom'] in multiline_types:
+                        field_type = "multiline"
+                    elif custom_field['schema']['custom'] in date_types:
+                        field_type = "date"
+                    else:
+                        field_type = "text"
 
-                custom_field_data = {
-                    "name": custom_field['name'][:64],
-                    "description": custom_field['name'],
-                    "type": field_type,
-                    "order": 1,
-                    "project": project
-                }
+                    custom_field_data = {
+                        "name": custom_field['name'][:64],
+                        "description": custom_field['name'],
+                        "type": field_type,
+                        "order": 1,
+                        "project": project
+                    }
 
-                UserStoryCustomAttribute.objects.get_or_create(**custom_field_data)
-                TaskCustomAttribute.objects.get_or_create(**custom_field_data)
-                IssueCustomAttribute.objects.get_or_create(**custom_field_data)
-                EpicCustomAttribute.objects.get_or_create(**custom_field_data)
+                    UserStoryCustomAttribute.objects.get_or_create(**custom_field_data)
+                    TaskCustomAttribute.objects.get_or_create(**custom_field_data)
+                    IssueCustomAttribute.objects.get_or_create(**custom_field_data)
+                    EpicCustomAttribute.objects.get_or_create(**custom_field_data)
 
         project.greenhopper_fields = greenhopper_fields
 
@@ -252,6 +270,7 @@ class JiraNormalImporter(JiraImporterCommon):
                     if options.get('keep_external_reference', False):
                         external_reference = ["jira", issue['fields']['url']]
 
+
                     us = UserStory.objects.create(
                         project=project,
                         owner=owner,
@@ -265,6 +284,22 @@ class JiraNormalImporter(JiraImporterCommon):
                         tags=issue['fields']['labels'],
                         external_reference=external_reference,
                     )
+
+                    points_value = issue['fields'].get(project.greenhopper_fields.get('points', None), None)
+                    if points_value:
+                        (points, _) = Points.objects.get_or_create(
+                            project=project,
+                            value=points_value,
+                            defaults={
+                                "name": str(points_value),
+                                "order": points_value,
+                            }
+                        )
+                        RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
+                    else:
+                        points = Points.objects.get(project=project, value__isnull=True)
+                        RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
+
 
                     if issue['fields']['duedate'] or issue['fields']['priority']:
                         custom_attributes_values = {}
