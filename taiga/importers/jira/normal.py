@@ -31,7 +31,7 @@ from taiga.projects.custom_attributes.models import (UserStoryCustomAttribute,
                                                      IssueCustomAttribute,
                                                      EpicCustomAttribute)
 from taiga.mdrender.service import render as mdrender
-from .common import JiraImporterCommon
+from .common import JiraImporterCommon, EPIC_COLORS
 
 
 class JiraNormalImporter(JiraImporterCommon):
@@ -42,7 +42,7 @@ class JiraNormalImporter(JiraImporterCommon):
         statuses = self._client.get("/project/{}/statuses".format(project_id))
         return statuses
 
-    def import_project(self, project_id, options={"template": "scrum", "users_bindings": {}, "keep_external_reference": False}):
+    def import_project(self, project_id, options):
         project = self._import_project_data(project_id, options)
         self._import_user_stories_data(project_id, project, options)
         self._import_epics_data(project_id, project, options)
@@ -82,9 +82,7 @@ class JiraNormalImporter(JiraImporterCommon):
                 "name": epic_status['name'],
                 "slug": slugify(epic_status['name']),
                 "is_closed": False,
-                "is_archived": False,
                 "color": "#999999",
-                "wip_limit": None,
                 "order": counter,
             })
             counter += 1
@@ -114,9 +112,7 @@ class JiraNormalImporter(JiraImporterCommon):
                 "name": us_status['name'],
                 "slug": slugify(us_status['name']),
                 "is_closed": False,
-                "is_archived": False,
                 "color": "#999999",
-                "wip_limit": None,
                 "order": counter,
             })
             counter += 1
@@ -131,9 +127,7 @@ class JiraNormalImporter(JiraImporterCommon):
                 "name": task_status['name'],
                 "slug": slugify(task_status['name']),
                 "is_closed": False,
-                "is_archived": False,
                 "color": "#999999",
-                "wip_limit": None,
                 "order": counter,
             })
             counter += 1
@@ -148,9 +142,7 @@ class JiraNormalImporter(JiraImporterCommon):
                 "name": issue_status['name'],
                 "slug": slugify(issue_status['name']),
                 "is_closed": False,
-                "is_archived": False,
                 "color": "#999999",
-                "wip_limit": None,
                 "order": counter,
             })
             counter += 1
@@ -169,17 +161,10 @@ class JiraNormalImporter(JiraImporterCommon):
         #         "order": 1,
         #     }]
 
-        # labels = self._client.get("/projects/{}/labels".format(project_id))
-        # tags_colors = []
-        # for label in labels:
-        #     name = label['name'].lower()
-        #     tags_colors.append([name, None])
-        #
         project = Project.objects.create(
             name=project['name'],
             description=project.get('description', ''),
             owner=self._user,
-            # tags_colors=tags_colors,
             creation_template=project_template
         )
 
@@ -239,26 +224,12 @@ class JiraNormalImporter(JiraImporterCommon):
         #             role=project.get_roles().get(slug="main"),
         #             is_admin=False,
         #         )
-        #
-        # iterations = self._client.get("/projects/{}/iterations".format(project_id))
-        # for iteration in iterations:
-        #     milestone = Milestone.objects.create(
-        #         name="Sprint {}".format(iteration['number']),
-        #         slug="sprint-{}".format(iteration['number']),
-        #         owner=self._user,
-        #         project=project,
-        #         estimated_start=iteration['start'][:10],
-        #         estimated_finish=iteration['finish'][:10],
-        #     )
-        #     Milestone.objects.filter(id=milestone.id).update(
-        #         created_date=iteration['start'],
-        #         modified_date=iteration['start'],
-        #     )
         return project
 
     def _import_user_stories_data(self, project_id, project, options):
         users_bindings = options.get('users_bindings', {})
         due_date_field = project.userstorycustomattributes.get(name="Due date")
+        priority_field = project.userstorycustomattributes.get(name="Priority")
 
         types = options.get('types_bindings', {}).get("us", [])
         for issue_type in types:
@@ -274,7 +245,6 @@ class JiraNormalImporter(JiraImporterCommon):
                 offset += issues['maxResults']
 
                 for issue in issues['issues']:
-                    import pprint; pprint.pprint(issue)
                     assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                     owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
@@ -296,12 +266,18 @@ class JiraNormalImporter(JiraImporterCommon):
                         external_reference=external_reference,
                     )
 
-                    if issue['fields']['duedate']:
-                        us.custom_attributes_values.attributes_values = {due_date_field.id: issue['fields']['duedate']}
+                    if issue['fields']['duedate'] or issue['fields']['priority']:
+                        custom_attributes_values = {}
+                        if issue['fields']['duedate']:
+                            custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
+                        if issue['fields']['priority']:
+                            custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
+                        us.custom_attributes_values.attributes_values = custom_attributes_values
                         us.custom_attributes_values.save()
 
+                    us.ref = issue['key'].split("-")[1]
                     UserStory.objects.filter(id=us.id).update(
-                        ref=issue['key'].split("-")[1],
+                        ref=us.ref,
                         modified_date=issue['fields']['updated'],
                         created_date=issue['fields']['created']
                     )
@@ -318,6 +294,7 @@ class JiraNormalImporter(JiraImporterCommon):
     def _import_subtasks(self, project_id, project, us, issue, options):
         users_bindings = options.get('users_bindings', {})
         due_date_field = project.taskcustomattributes.get(name="Due date")
+        priority_field = project.taskcustomattributes.get(name="Priority")
 
         if len(issue['fields']['subtasks']) == 0:
             return
@@ -334,7 +311,6 @@ class JiraNormalImporter(JiraImporterCommon):
             offset += issues['maxResults']
 
             for issue in issues['issues']:
-                import pprint; pprint.pprint(issue)
                 assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                 owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
@@ -354,12 +330,18 @@ class JiraNormalImporter(JiraImporterCommon):
                     external_reference=external_reference,
                 )
 
-                if issue['fields']['duedate']:
-                    task.custom_attributes_values.attributes_values = {due_date_field.id: issue['fields']['duedate']}
+                if issue['fields']['duedate'] or issue['fields']['priority']:
+                    custom_attributes_values = {}
+                    if issue['fields']['duedate']:
+                        custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
+                    if issue['fields']['priority']:
+                        custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
+                    task.custom_attributes_values.attributes_values = custom_attributes_values
                     task.custom_attributes_values.save()
 
+                task.ref = issue['key'].split("-")[1]
                 Task.objects.filter(id=task.id).update(
-                    ref=issue['key'].split("-")[1],
+                    ref=task.ref,
                     modified_date=issue['fields']['updated'],
                     created_date=issue['fields']['created']
                 )
@@ -376,6 +358,7 @@ class JiraNormalImporter(JiraImporterCommon):
     def _import_issues_data(self, project_id, project, options):
         users_bindings = options.get('users_bindings', {})
         due_date_field = project.issuecustomattributes.get(name="Due date")
+        priority_field = project.issuecustomattributes.get(name="Priority")
 
         types = options.get('types_bindings', {}).get("issue", [])
         for issue_type in types:
@@ -408,27 +391,28 @@ class JiraNormalImporter(JiraImporterCommon):
                         tags=issue['fields']['labels'],
                         external_reference=external_reference,
                     )
-                    # for watcher in story['owner_ids'][1:]:
-                    #     watcher_user = users_bindings.get(watcher, None)
-                    #     if watcher_user:
-                    #         taiga_issue.add_watcher(watcher_user)
 
-                    if issue['fields']['duedate']:
-                        taiga_issue.custom_attributes_values.attributes_values = {due_date_field.id: issue['fields']['duedate']}
+                    if issue['fields']['duedate'] or issue['fields']['priority']:
+                        custom_attributes_values = {}
+                        if issue['fields']['duedate']:
+                            custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
+                        if issue['fields']['priority']:
+                            custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
+                        taiga_issue.custom_attributes_values.attributes_values = custom_attributes_values
                         taiga_issue.custom_attributes_values.save()
 
+                    taiga_issue.ref = issue['key'].split("-")[1]
                     Issue.objects.filter(id=taiga_issue.id).update(
-                        ref=issue['key'].split("-")[1],
+                        ref=taiga_issue.ref,
                         modified_date=issue['fields']['updated'],
                         created_date=issue['fields']['created']
                     )
                     take_snapshot(taiga_issue, comment="", user=None, delete=False)
-                    # self._import_attachments(us, card, options)
-                    # self._import_tasks(project_id, us, story)
                     for subtask in issue['fields']['subtasks']:
                         print("WARNING: Ignoring subtask {} because parent isn't a User Story".format(subtask['key']))
-                    # self._import_user_story_activity(project_id, us, story, options)
-                    # self._import_comments(project_id, us, story, options)
+                    self._import_comments(taiga_issue, issue, options)
+                    self._import_attachments(taiga_issue, issue, options)
+                    self._import_changelog(project, taiga_issue, issue, options)
                     counter += 1
 
                 if len(issues['issues']) < issues['maxResults']:
@@ -437,6 +421,7 @@ class JiraNormalImporter(JiraImporterCommon):
     def _import_epics_data(self, project_id, project, options):
         users_bindings = options.get('users_bindings', {})
         due_date_field = project.epiccustomattributes.get(name="Due date")
+        priority_field = project.epiccustomattributes.get(name="Priority")
 
         types = options.get('types_bindings', {}).get("epic", [])
         for issue_type in types:
@@ -459,20 +444,6 @@ class JiraNormalImporter(JiraImporterCommon):
                     if options.get('keep_external_reference', False):
                         external_reference = ["jira", issue['fields']['url']]
 
-                    epic_color = issue['fields'][project.greenhopper_fields['color']]
-                    epic_color = {
-                        "ghx-label-0": "#ffffff",
-                        "ghx-label-1": "#815b3a",
-                        "ghx-label-2": "#f79232",
-                        "ghx-label-3": "#d39c3f",
-                        "ghx-label-4": "#3b7fc4",
-                        "ghx-label-5": "#4a6785",
-                        "ghx-label-6": "#8eb021",
-                        "ghx-label-7": "#ac707a",
-                        "ghx-label-8": "#654982",
-                        "ghx-label-9": "#f15c75",
-                    }.get(epic_color, None)
-
                     epic = Epic.objects.create(
                         project=project,
                         owner=owner,
@@ -483,29 +454,32 @@ class JiraNormalImporter(JiraImporterCommon):
                         epics_order=counter,
                         tags=issue['fields']['labels'],
                         external_reference=external_reference,
-                        color=epic_color,
                     )
-                    # for watcher in story['owner_ids'][1:]:
-                    #     watcher_user = users_bindings.get(watcher, None)
-                    #     if watcher_user:
-                    #         epic.add_watcher(watcher_user)
 
-                    if issue['fields']['duedate']:
-                        epic.custom_attributes_values.attributes_values = {due_date_field.id: issue['fields']['duedate']}
+                    if issue['fields']['duedate'] or issue['fields']['priority']:
+                        custom_attributes_values = {}
+                        if issue['fields']['duedate']:
+                            custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
+                        if issue['fields']['priority']:
+                            custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
+                        epic.custom_attributes_values.attributes_values = custom_attributes_values
                         epic.custom_attributes_values.save()
 
+                    epic.ref = issue['key'].split("-")[1]
                     Epic.objects.filter(id=epic.id).update(
-                        ref=issue['key'].split("-")[1],
+                        ref=epic.ref,
                         modified_date=issue['fields']['updated'],
                         created_date=issue['fields']['created']
                     )
                     take_snapshot(epic, comment="", user=None, delete=False)
-                    # self._import_attachments(us, card, options)
-                    # self._import_tasks(project_id, us, story)
                     for subtask in issue['fields']['subtasks']:
                         print("WARNING: Ignoring subtask {} because parent isn't a User Story".format(subtask['key']))
-                    # self._import_user_story_activity(project_id, us, story, options)
-                    # self._import_comments(project_id, us, story, options)
+                    self._import_comments(epic, issue, options)
+                    self._import_attachments(epic, issue, options)
+                    issue_with_changelog = self._client.get("/issue/{}".format(issue['key']), {
+                        "expand": "changelog"
+                    })
+                    self._import_changelog(project, epic, issue_with_changelog, options)
                     counter += 1
 
                 if len(issues['issues']) < issues['maxResults']:
