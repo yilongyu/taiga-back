@@ -51,13 +51,16 @@ class JiraClient:
         self.server = server
         self.api_url = server + "/rest/agile/1.0/{}"
         self.main_api_url = server + "/rest/api/2/{}"
-        self.oauth = OAuth1(
-            oauth['consumer_key'],
-            signature_method=SIGNATURE_RSA,
-            rsa_key=oauth['key_cert'],
-            resource_owner_key=oauth['access_token'],
-            resource_owner_secret=oauth['access_token_secret']
-        )
+        if oauth:
+            self.oauth = OAuth1(
+                oauth['consumer_key'],
+                signature_method=SIGNATURE_RSA,
+                rsa_key=oauth['key_cert'],
+                resource_owner_key=oauth['access_token'],
+                resource_owner_secret=oauth['access_token_secret']
+            )
+        else:
+            self.oauth = None
 
     def get(self, uri_path, query_params=None):
         headers = {
@@ -68,7 +71,7 @@ class JiraClient:
 
         if uri_path[0] == '/':
             uri_path = uri_path[1:]
-        url = self.api_url.format(uri_path)
+        url = self.main_api_url.format(uri_path)
 
         response = requests.get(url, params=query_params, headers=headers, auth=self.oauth)
 
@@ -79,7 +82,7 @@ class JiraClient:
 
         return response.json()
 
-    def get_main_api(self, uri_path, query_params=None):
+    def get_agile(self, uri_path, query_params=None):
         headers = {
             'Content-Type': "application/json"
         }
@@ -88,7 +91,7 @@ class JiraClient:
 
         if uri_path[0] == '/':
             uri_path = uri_path[1:]
-        url = self.main_api_url.format(uri_path)
+        url = self.api_url.format(uri_path)
 
         response = requests.get(url, params=query_params, headers=headers, auth=self.oauth)
 
@@ -121,12 +124,12 @@ class JiraImporterCommon:
 
     def list_users(self):
         result = []
-        users = self._client.get_main_api("/user/picker", {
+        users = self._client.get("/user/picker", {
             "query": "@",
             "maxResults": 1000,
         })
         for user in users['users']:
-            user_data = self._client.get_main_api("/user", {
+            user_data = self._client.get("/user", {
                 "key": user['key']
             })
             result.append({
@@ -136,41 +139,26 @@ class JiraImporterCommon:
             })
         return result
 
-
     def _import_comments(self, obj, issue, options):
         users_bindings = options.get('users_bindings', {})
+        offset = 0
+        while True:
+            comments = self._client.get("/issue/{}/comment".format(issue['key']), {"startAt": offset})
+            for comment in comments['comments']:
+                snapshot = take_snapshot(
+                    obj,
+                    comment=comment['body'],
+                    user=users_bindings.get(
+                        comment['author']['name'],
+                        User(full_name=comment['author']['displayName'])
+                    ),
+                    delete=False
+                )
+                HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment['created'])
 
-        for comment in issue['fields']['comment']['comments']:
-            snapshot = take_snapshot(
-                obj,
-                comment=comment['body'],
-                user=users_bindings.get(
-                    comment['author']['name'],
-                    User(full_name=comment['author']['displayName'])
-                ),
-                delete=False
-            )
-            HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment['created'])
-
-        if issue['fields']['comment']['total'] < issue['fields']['comment']['maxResults']:
-            offset = len(issue['fields']['comment'])
-            while True:
-                comments = self._client.get_main_api("/issue/{}/comment".format(issue['key']), {"startAt": offset})
-                for comment in comments['values']:
-                    snapshot = take_snapshot(
-                        obj,
-                        comment=comment['body'],
-                        user=users_bindings.get(
-                            comment['author']['name'],
-                            User(full_name=comment['author']['displayName'])
-                        ),
-                        delete=False
-                    )
-                    HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment['created'])
-
-                offset += len(comments['values'])
-                if len(comments['values']) <= comments['maxResults']:
-                    break
+            offset += len(comments['comments'])
+            if len(comments['comments']) <= comments['maxResults']:
+                break
 
     def _import_attachments(self, obj, issue, options):
         users_bindings = options.get('users_bindings', {})
@@ -331,14 +319,43 @@ class JiraImporterCommon:
                 has_data = True
             elif history_item['field'] == "status":
                 if isinstance(obj, Task):
-                    result['change_old']["status"] = obj.project.task_statuses.get(name=history_item['fromString']).id
-                    result['change_new']["status"] = obj.project.task_statuses.get(name=history_item['toString']).id
+                    try:
+                        old_status = obj.project.task_statuses.get(name=history_item['fromString']).id
+                    except Exception:
+                        old_status = -1
+                    try:
+                        new_status = obj.project.task_statuses.get(name=history_item['toString']).id
+                    except Exception:
+                        new_status = -2
                 elif isinstance(obj, UserStory):
-                    result['change_old']["status"] = obj.project.us_statuses.get(name=history_item['fromString']).id
-                    result['change_new']["status"] = obj.project.us_statuses.get(name=history_item['toString']).id
+                    try:
+                        old_status = obj.project.us_statuses.get(name=history_item['fromString']).id
+                    except Exception:
+                        old_status = -1
+                    try:
+                        new_status = obj.project.us_statuses.get(name=history_item['toString']).id
+                    except Exception:
+                        new_status = -2
                 elif isinstance(obj, Epic):
-                    result['change_old']["status"] = obj.project.epic_statuses.get(name=history_item['fromString']).id
-                    result['change_new']["status"] = obj.project.epic_statuses.get(name=history_item['toString']).id
+                    try:
+                        old_status = obj.project.epic_statuses.get(name=history_item['fromString']).id
+                    except Exception:
+                        old_status = -1
+                    try:
+                        new_status = obj.project.epic_statuses.get(name=history_item['toString']).id
+                    except Exception:
+                        new_status = -2
+
+                if old_status == -1 or new_status == -2:
+                    result['update_values']["status"] = {}
+
+                if old_status == -1:
+                    result['update_values']["status"]["-1"] = history_item['fromString']
+                if new_status == -2:
+                    result['update_values']["status"]["-2"] = history_item['toString']
+
+                result['change_old']["status"] = old_status
+                result['change_new']["status"] = new_status
                 has_data = True
             elif history_item['field'] == "Story Points":
                 old_points = None

@@ -34,6 +34,9 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--token', dest="token", type=str,
                             help='Auth token')
+        parser.add_argument('--server', dest="server", type=str,
+                            help='Server address (default: https://jira.atlassian.com)',
+                            default="https://jira.atlassian.com")
         parser.add_argument('--project-id', dest="project_id", type=str,
                             help='Project ID or full name (ex: taigaio/taiga-back)')
         parser.add_argument('--project-type', dest="project_type", type=str,
@@ -52,11 +55,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         admin = User.objects.get(username="admin")
-        server = "http://jira.projects.kaleidos.net"
+        server = options.get("server")
         for project in admin.projects.all():
             service.orphan_project(project)
 
-        if options.get('token', None):
+        if options.get('token', None) == "anon":
+            token = None
+        elif options.get('token', None):
             token = json.loads(options.get('token'))
         else:
             with open(settings.JIRA_CERT_FILE, 'r') as key_cert_file:

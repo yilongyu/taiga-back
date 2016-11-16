@@ -183,87 +183,52 @@ class JiraNormalImporter(JiraImporterCommon):
             creation_template=project_template
         )
 
-        UserStoryCustomAttribute.objects.create(
-            name="Due date",
-            description="Due date",
-            type="date",
-            order=1,
-            project=project
-        )
-
-        TaskCustomAttribute.objects.create(
-            name="Due date",
-            description="Due date",
-            type="date",
-            order=1,
-            project=project
-        )
-
-        IssueCustomAttribute.objects.create(
-            name="Due date",
-            description="Due date",
-            type="date",
-            order=1,
-            project=project
-        )
-
-        EpicCustomAttribute.objects.create(
-            name="Due date",
-            description="Due date",
-            type="date",
-            order=1,
-            project=project
-        )
+        for model in [UserStoryCustomAttribute, TaskCustomAttribute, IssueCustomAttribute, EpicCustomAttribute]:
+            model.objects.create(
+                name="Due date",
+                description="Due date",
+                type="date",
+                order=1,
+                project=project
+            )
+            model.objects.create(
+                name="Priority",
+                description="Priority",
+                type="text",
+                order=1,
+                project=project
+            )
 
         greenhopper_fields = {}
         for custom_field in self._client.get("/field"):
             if custom_field['custom']:
-                if custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-sprint":
-                    greenhopper_fields["sprint"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-link":
-                    greenhopper_fields["link"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-status":
-                    greenhopper_fields["status"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-label":
-                    greenhopper_fields["label"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-color":
-                    greenhopper_fields["color"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-lexo-rank":
-                    greenhopper_fields["rank"] = custom_field['id']
-                elif (
-                    custom_field['name'] == "Story Points" and
-                    custom_field['schema']['custom'] == 'com.atlassian.jira.plugin.system.customfieldtypes:float'
-                ):
-                    greenhopper_fields["points"] = custom_field['id']
+                multiline_types = [
+                    "com.atlassian.jira.plugin.system.customfieldtypes:textarea"
+                ]
+                date_types = [
+                    "com.atlassian.jira.plugin.system.customfieldtypes:datepicker"
+                    "com.atlassian.jira.plugin.system.customfieldtypes:datetime"
+                ]
+                if custom_field['schema']['custom'] in multiline_types:
+                    field_type = "multiline"
+                elif custom_field['schema']['custom'] in date_types:
+                    field_type = "date"
                 else:
-                    multiline_types = [
-                        "com.atlassian.jira.plugin.system.customfieldtypes:textarea"
-                    ]
-                    date_types = [
-                        "com.atlassian.jira.plugin.system.customfieldtypes:datepicker"
-                        "com.atlassian.jira.plugin.system.customfieldtypes:datetime"
-                    ]
-                    if custom_field['schema']['custom'] in multiline_types:
-                        field_type = "multiline"
-                    elif custom_field['schema']['custom'] in date_types:
-                        field_type = "date"
-                    else:
-                        field_type = "text"
+                    field_type = "text"
 
-                    custom_field_data = {
-                        "name": custom_field['name'],
-                        "description": custom_field['name'],
-                        "type": field_type,
-                        "order": 1,
-                        "project": project
-                    }
+                custom_field_data = {
+                    "name": custom_field['name'][:64],
+                    "description": custom_field['name'],
+                    "type": field_type,
+                    "order": 1,
+                    "project": project
+                }
 
-                    UserStoryCustomAttribute.objects.create(**custom_field_data)
-                    TaskCustomAttribute.objects.create(**custom_field_data)
-                    IssueCustomAttribute.objects.create(**custom_field_data)
-                    EpicCustomAttribute.objects.create(**custom_field_data)
+                UserStoryCustomAttribute.objects.get_or_create(**custom_field_data)
+                TaskCustomAttribute.objects.get_or_create(**custom_field_data)
+                IssueCustomAttribute.objects.get_or_create(**custom_field_data)
+                EpicCustomAttribute.objects.get_or_create(**custom_field_data)
 
-                import pprint; pprint.pprint(custom_field)
         project.greenhopper_fields = greenhopper_fields
 
         # for user in options.get('users_bindings', {}).values():
@@ -302,11 +267,14 @@ class JiraNormalImporter(JiraImporterCommon):
             while True:
                 issues = self._client.get("/search", {
                     "jql": "project={} AND issuetype={}".format(project_id, issue_type['id']),
-                    "startAt": offset
+                    "startAt": offset,
+                    "fields": "*all",
+                    "expand": "changelog,attachment",
                 })
                 offset += issues['maxResults']
 
                 for issue in issues['issues']:
+                    import pprint; pprint.pprint(issue)
                     assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                     owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
@@ -328,22 +296,6 @@ class JiraNormalImporter(JiraImporterCommon):
                         external_reference=external_reference,
                     )
 
-                    points_value = issue['fields'][project.greenhopper_fields['points']]
-                    (points, _) = Points.objects.get_or_create(
-                        project=project,
-                        value=points_value,
-                        defaults={
-                            "name": str(points_value),
-                            "order": points_value,
-                        }
-                    )
-                    RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
-
-                    # for watcher in story['owner_ids'][1:]:
-                    #     watcher_user = users_bindings.get(watcher, None)
-                    #     if watcher_user:
-                    #         us.add_watcher(watcher_user)
-
                     if issue['fields']['duedate']:
                         us.custom_attributes_values.attributes_values = {due_date_field.id: issue['fields']['duedate']}
                         us.custom_attributes_values.save()
@@ -354,16 +306,16 @@ class JiraNormalImporter(JiraImporterCommon):
                         created_date=issue['fields']['created']
                     )
                     take_snapshot(us, comment="", user=None, delete=False)
-                    # self._import_attachments(us, card, options)
-                    self._import_subtasks(project, us, issue, options)
-                    # self._import_user_story_activity(project_id, us, story, options)
-                    # self._import_comments(project_id, us, story, options)
+                    self._import_subtasks(project_id, project, us, issue, options)
+                    self._import_comments(us, issue, options)
+                    self._import_attachments(us, issue, options)
+                    self._import_changelog(project, us, issue, options)
                     counter += 1
 
                 if len(issues['issues']) < issues['maxResults']:
                     break
 
-    def _import_subtasks(self, project, us, issue, options):
+    def _import_subtasks(self, project_id, project, us, issue, options):
         users_bindings = options.get('users_bindings', {})
         due_date_field = project.taskcustomattributes.get(name="Due date")
 
@@ -375,11 +327,14 @@ class JiraNormalImporter(JiraImporterCommon):
         while True:
             issues = self._client.get("/search", {
                 "jql": "parent={}".format(issue['key']),
-                "startAt": offset
+                "startAt": offset,
+                "fields": "*all",
+                "expand": "changelog,attachment",
             })
             offset += issues['maxResults']
 
             for issue in issues['issues']:
+                import pprint; pprint.pprint(issue)
                 assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                 owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
@@ -398,10 +353,6 @@ class JiraNormalImporter(JiraImporterCommon):
                     tags=issue['fields']['labels'],
                     external_reference=external_reference,
                 )
-                # for watcher in story['owner_ids'][1:]:
-                #     watcher_user = users_bindings.get(watcher, None)
-                #     if watcher_user:
-                #         task.add_watcher(watcher_user)
 
                 if issue['fields']['duedate']:
                     task.custom_attributes_values.attributes_values = {due_date_field.id: issue['fields']['duedate']}
@@ -413,11 +364,11 @@ class JiraNormalImporter(JiraImporterCommon):
                     created_date=issue['fields']['created']
                 )
                 take_snapshot(task, comment="", user=None, delete=False)
-                # self._import_attachments(us, card, options)
                 for subtask in issue['fields']['subtasks']:
                     print("WARNING: Ignoring subtask {} because parent isn't a User Story".format(subtask['key']))
-                # self._import_user_story_activity(project_id, us, story, options)
-                # self._import_comments(project_id, us, story, options)
+                self._import_comments(task, issue, options)
+                self._import_attachments(task, issue, options)
+                self._import_changelog(project, task, issue, options)
                 counter += 1
             if len(issues['issues']) < issues['maxResults']:
                 break
@@ -433,7 +384,9 @@ class JiraNormalImporter(JiraImporterCommon):
             while True:
                 issues = self._client.get("/search", {
                     "jql": "project={} AND issuetype={}".format(project_id, issue_type['id']),
-                    "startAt": offset
+                    "startAt": offset,
+                    "fields": "*all",
+                    "expand": "changelog,attachment",
                 })
                 offset += issues['maxResults']
 
@@ -492,7 +445,9 @@ class JiraNormalImporter(JiraImporterCommon):
             while True:
                 issues = self._client.get("/search", {
                     "jql": "project={} AND issuetype={}".format(project_id, issue_type['id']),
-                    "startAt": offset
+                    "startAt": offset,
+                    "fields": "*all",
+                    "expand": "changelog,attachment",
                 })
                 offset += issues['maxResults']
 

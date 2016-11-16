@@ -16,7 +16,7 @@ from .common import JiraImporterCommon
 
 class JiraAgileImporter(JiraImporterCommon):
     def list_projects(self):
-        return self._client.get('/board')['values']
+        return self._client.get_agile('/board')['values']
 
     def import_project(self, project_id, options=None):
         project = self._import_project_data(project_id, options)
@@ -24,8 +24,8 @@ class JiraAgileImporter(JiraImporterCommon):
         self._import_user_stories_data(project_id, project, options)
 
     def _import_project_data(self, project_id, options):
-        project = self._client.get("/board/{}".format(project_id))
-        project_config = self._client.get("/board/{}/configuration".format(project_id))
+        project = self._client.get_agile("/board/{}".format(project_id))
+        project_config = self._client.get_agile("/board/{}/configuration".format(project_id))
         if project['type'] == "scrum":
             project_template = ProjectTemplate.objects.get(slug="scrum")
             options['type'] = "scrum"
@@ -132,7 +132,7 @@ class JiraAgileImporter(JiraImporterCommon):
         #         )
         #
         if project_template.slug == "scrum":
-            for sprint in self._client.get("/board/{}/sprint".format(project_id))['values']:
+            for sprint in self._client.get_agile("/board/{}/sprint".format(project_id))['values']:
                 start_datetime = sprint.get('startDate', None)
                 end_datetime = sprint.get('startDate', None)
                 start_date = datetime.date.today()
@@ -160,14 +160,14 @@ class JiraAgileImporter(JiraImporterCommon):
         users_bindings = options.get('users_bindings', {})
         due_date_field = project.userstorycustomattributes.get(name="Due date")
         priority_field = project.userstorycustomattributes.get(name="Priority")
-        project_conf = self._client.get("/board/{}/configuration".format(project_id))
+        project_conf = self._client.get_agile("/board/{}/configuration".format(project_id))
         if options['type'] == "scrum":
             estimation_field = project_conf['estimation']['field']['fieldId']
 
         counter = 0
         offset = 0
         while True:
-            issues = self._client.get("/board/{}/issue".format(project_id), {
+            issues = self._client.get_agile("/board/{}/issue".format(project_id), {
                 "startAt": offset,
                 "expand": "changelog",
             })
@@ -262,7 +262,7 @@ class JiraAgileImporter(JiraImporterCommon):
         counter = 0
         offset = 0
         while True:
-            issues = self._client.get("/board/{}/issue".format(project_id), {
+            issues = self._client.get_agile("/board/{}/issue".format(project_id), {
                 "jql": "parent={}".format(issue['key']),
                 "startAt": offset,
                 "expand": "changelog",
@@ -323,13 +323,13 @@ class JiraAgileImporter(JiraImporterCommon):
         counter = 0
         offset = 0
         while True:
-            issues = self._client.get("/board/{}/epic".format(project_id), {
+            issues = self._client.get_agile("/board/{}/epic".format(project_id), {
                 "startAt": offset,
             })
             offset += issues['maxResults']
 
             for epic in issues['values']:
-                issue = self._client.get("/issue/{}".format(epic['key']))
+                issue = self._client.get_agile("/issue/{}".format(epic['key']))
                 assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                 owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
@@ -366,7 +366,6 @@ class JiraAgileImporter(JiraImporterCommon):
                 )
 
                 take_snapshot(epic, comment="", user=None, delete=False)
-                self._import_attachments(epic, issue, options)
                 for subtask in issue['fields']['subtasks']:
                     print("WARNING: Ignoring subtask {} because parent isn't a User Story".format(subtask['key']))
                 self._import_comments(epic, issue, options)
