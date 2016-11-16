@@ -112,7 +112,9 @@ class JiraNormalImporter(JiraImporterCommon):
                 "name": us_status['name'],
                 "slug": slugify(us_status['name']),
                 "is_closed": False,
+                "is_archived": False,
                 "color": "#999999",
+                "wip_limit": None,
                 "order": counter,
             })
             counter += 1
