@@ -26,10 +26,6 @@ from taiga.projects.history.services import (make_diff_from_dicts,
                                              FrozenDiff)
 from taiga.projects.history.models import HistoryEntry
 from taiga.projects.history.choices import HistoryType
-from taiga.projects.custom_attributes.models import (UserStoryCustomAttribute,
-                                                     TaskCustomAttribute,
-                                                     IssueCustomAttribute,
-                                                     EpicCustomAttribute)
 from taiga.mdrender.service import render as mdrender
 from .common import JiraImporterCommon, EPIC_COLORS
 
@@ -171,71 +167,7 @@ class JiraNormalImporter(JiraImporterCommon):
             creation_template=project_template
         )
 
-        for model in [UserStoryCustomAttribute, TaskCustomAttribute, IssueCustomAttribute, EpicCustomAttribute]:
-            model.objects.create(
-                name="Due date",
-                description="Due date",
-                type="date",
-                order=1,
-                project=project
-            )
-            model.objects.create(
-                name="Priority",
-                description="Priority",
-                type="text",
-                order=1,
-                project=project
-            )
-
-        greenhopper_fields = {}
-        for custom_field in self._client.get("/field"):
-            if custom_field['custom']:
-                if custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-sprint":
-                    greenhopper_fields["sprint"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-link":
-                    greenhopper_fields["link"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-status":
-                    greenhopper_fields["status"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-label":
-                    greenhopper_fields["label"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-color":
-                    greenhopper_fields["color"] = custom_field['id']
-                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-lexo-rank":
-                    greenhopper_fields["rank"] = custom_field['id']
-                elif (
-                    custom_field['name'] == "Story Points" and
-                    custom_field['schema']['custom'] == 'com.atlassian.jira.plugin.system.customfieldtypes:float'
-                ):
-                    greenhopper_fields["points"] = custom_field['id']
-                else:
-                    multiline_types = [
-                        "com.atlassian.jira.plugin.system.customfieldtypes:textarea"
-                    ]
-                    date_types = [
-                        "com.atlassian.jira.plugin.system.customfieldtypes:datepicker"
-                        "com.atlassian.jira.plugin.system.customfieldtypes:datetime"
-                    ]
-                    if custom_field['schema']['custom'] in multiline_types:
-                        field_type = "multiline"
-                    elif custom_field['schema']['custom'] in date_types:
-                        field_type = "date"
-                    else:
-                        field_type = "text"
-
-                    custom_field_data = {
-                        "name": custom_field['name'][:64],
-                        "description": custom_field['name'],
-                        "type": field_type,
-                        "order": 1,
-                        "project": project
-                    }
-
-                    UserStoryCustomAttribute.objects.get_or_create(**custom_field_data)
-                    TaskCustomAttribute.objects.get_or_create(**custom_field_data)
-                    IssueCustomAttribute.objects.get_or_create(**custom_field_data)
-                    EpicCustomAttribute.objects.get_or_create(**custom_field_data)
-
-        project.greenhopper_fields = greenhopper_fields
+        self._create_custom_fields(project)
 
         # for user in options.get('users_bindings', {}).values():
         #     if user != self._user:
@@ -249,8 +181,6 @@ class JiraNormalImporter(JiraImporterCommon):
 
     def _import_user_stories_data(self, project_id, project, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = project.userstorycustomattributes.get(name="Due date")
-        priority_field = project.userstorycustomattributes.get(name="Priority")
 
         types = options.get('types_bindings', {}).get("us", [])
         for issue_type in types:
@@ -288,7 +218,7 @@ class JiraNormalImporter(JiraImporterCommon):
                         external_reference=external_reference,
                     )
 
-                    points_value = issue['fields'].get(project.greenhopper_fields.get('points', None), None)
+                    points_value = issue['fields'].get(self.greenhopper_fields.get('points', None), None)
                     if points_value:
                         (points, _) = Points.objects.get_or_create(
                             project=project,
@@ -303,15 +233,7 @@ class JiraNormalImporter(JiraImporterCommon):
                         points = Points.objects.get(project=project, value__isnull=True)
                         RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
 
-
-                    if issue['fields']['duedate'] or issue['fields']['priority']:
-                        custom_attributes_values = {}
-                        if issue['fields']['duedate']:
-                            custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                        if issue['fields']['priority']:
-                            custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                        us.custom_attributes_values.attributes_values = custom_attributes_values
-                        us.custom_attributes_values.save()
+                    self._import_to_custom_fields(us, issue, options)
 
                     us.ref = issue['key'].split("-")[1]
                     UserStory.objects.filter(id=us.id).update(
@@ -368,14 +290,7 @@ class JiraNormalImporter(JiraImporterCommon):
                     external_reference=external_reference,
                 )
 
-                if issue['fields']['duedate'] or issue['fields']['priority']:
-                    custom_attributes_values = {}
-                    if issue['fields']['duedate']:
-                        custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                    if issue['fields']['priority']:
-                        custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                    task.custom_attributes_values.attributes_values = custom_attributes_values
-                    task.custom_attributes_values.save()
+                self._import_to_custom_fields(task, issue, options)
 
                 task.ref = issue['key'].split("-")[1]
                 Task.objects.filter(id=task.id).update(
@@ -430,14 +345,7 @@ class JiraNormalImporter(JiraImporterCommon):
                         external_reference=external_reference,
                     )
 
-                    if issue['fields']['duedate'] or issue['fields']['priority']:
-                        custom_attributes_values = {}
-                        if issue['fields']['duedate']:
-                            custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                        if issue['fields']['priority']:
-                            custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                        taiga_issue.custom_attributes_values.attributes_values = custom_attributes_values
-                        taiga_issue.custom_attributes_values.save()
+                    self._import_to_custom_fields(taiga_issue, issue, options)
 
                     taiga_issue.ref = issue['key'].split("-")[1]
                     Issue.objects.filter(id=taiga_issue.id).update(
@@ -494,14 +402,7 @@ class JiraNormalImporter(JiraImporterCommon):
                         external_reference=external_reference,
                     )
 
-                    if issue['fields']['duedate'] or issue['fields']['priority']:
-                        custom_attributes_values = {}
-                        if issue['fields']['duedate']:
-                            custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                        if issue['fields']['priority']:
-                            custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                        epic.custom_attributes_values.attributes_values = custom_attributes_values
-                        epic.custom_attributes_values.save()
+                    self._import_to_custom_fields(epic, issue, options)
 
                     epic.ref = issue['key'].split("-")[1]
                     Epic.objects.filter(id=epic.id).update(
@@ -535,7 +436,7 @@ class JiraNormalImporter(JiraImporterCommon):
                 offset += issues['maxResults']
 
                 for issue in issues['issues']:
-                    epic_key = issue['fields'][project.greenhopper_fields['link']]
+                    epic_key = issue['fields'][self.greenhopper_fields['link']]
                     if epic_key:
                         epic = project.epics.get(ref=int(epic_key.split("-")[1]))
                         us = project.user_stories.get(ref=int(issue['key'].split("-")[1]))

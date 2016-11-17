@@ -20,6 +20,10 @@ from taiga.projects.history.services import (make_diff_from_dicts,
                                              make_key_from_model_object,
                                              get_typename_for_model_class,
                                              FrozenDiff)
+from taiga.projects.custom_attributes.models import (UserStoryCustomAttribute,
+                                                     TaskCustomAttribute,
+                                                     IssueCustomAttribute,
+                                                     EpicCustomAttribute)
 from taiga.projects.history.models import HistoryEntry
 from taiga.projects.history.choices import HistoryType
 from taiga.mdrender.service import render as mdrender
@@ -150,6 +154,140 @@ class JiraImporterCommon:
             offset += len(comments['comments'])
             if len(comments['comments']) <= comments['maxResults']:
                 break
+
+    def _create_custom_fields(self, project):
+        custom_fields = []
+        for model in [UserStoryCustomAttribute, TaskCustomAttribute, IssueCustomAttribute, EpicCustomAttribute]:
+            model.objects.create(
+                name="Due date",
+                description="Due date",
+                type="date",
+                order=1,
+                project=project
+            )
+            model.objects.create(
+                name="Priority",
+                description="Priority",
+                type="text",
+                order=1,
+                project=project
+            )
+            model.objects.create(
+                name="Resolution",
+                description="Resolution",
+                type="text",
+                order=1,
+                project=project
+            )
+            model.objects.create(
+                name="Resolution date",
+                description="Resolution date",
+                type="date",
+                order=1,
+                project=project
+            )
+        custom_fields.append({
+            "jira_field_name": "duedate",
+            "taiga_field_name": "Due date",
+        })
+        custom_fields.append({
+            "jira_field_name": ["priority", "name"],
+            "taiga_field_name": "Priority",
+        })
+        custom_fields.append({
+            "jira_field_name": ["resolution", "name"],
+            "taiga_field_name": "Resolution",
+        })
+        custom_fields.append({
+            "jira_field_name": "resolutiondate",
+            "taiga_field_name": "Resolution date",
+        })
+
+        greenhopper_fields = {}
+        for custom_field in self._client.get("/field"):
+            if custom_field['custom']:
+                if custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-sprint":
+                    greenhopper_fields["sprint"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-link":
+                    greenhopper_fields["link"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-status":
+                    greenhopper_fields["status"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-label":
+                    greenhopper_fields["label"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-epic-color":
+                    greenhopper_fields["color"] = custom_field['id']
+                elif custom_field['schema']['custom'] == "com.pyxis.greenhopper.jira:gh-lexo-rank":
+                    greenhopper_fields["rank"] = custom_field['id']
+                elif (
+                    custom_field['name'] == "Story Points" and
+                    custom_field['schema']['custom'] == 'com.atlassian.jira.plugin.system.customfieldtypes:float'
+                ):
+                    greenhopper_fields["points"] = custom_field['id']
+                else:
+                    multiline_types = [
+                        "com.atlassian.jira.plugin.system.customfieldtypes:textarea"
+                    ]
+                    date_types = [
+                        "com.atlassian.jira.plugin.system.customfieldtypes:datepicker"
+                        "com.atlassian.jira.plugin.system.customfieldtypes:datetime"
+                    ]
+                    if custom_field['schema']['custom'] in multiline_types:
+                        field_type = "multiline"
+                    elif custom_field['schema']['custom'] in date_types:
+                        field_type = "date"
+                    else:
+                        field_type = "text"
+
+                    custom_field_data = {
+                        "name": custom_field['name'][:64],
+                        "description": custom_field['name'],
+                        "type": field_type,
+                        "order": 1,
+                        "project": project
+                    }
+
+                    UserStoryCustomAttribute.objects.get_or_create(**custom_field_data)
+                    TaskCustomAttribute.objects.get_or_create(**custom_field_data)
+                    IssueCustomAttribute.objects.get_or_create(**custom_field_data)
+                    EpicCustomAttribute.objects.get_or_create(**custom_field_data)
+
+                    custom_fields.append({
+                        "jira_field_name": custom_field['id'],
+                        "taiga_field_name": custom_field['name'][:64],
+                    })
+
+        self.greenhopper_fields = greenhopper_fields
+        self.custom_fields = custom_fields
+
+    def _import_to_custom_fields(self, obj, issue, options):
+        if isinstance(obj, Epic):
+            custom_att_manager = obj.project.epiccustomattributes
+        elif isinstance(obj, UserStory):
+            custom_att_manager = obj.project.userstorycustomattributes
+        elif isinstance(obj, Task):
+            custom_att_manager = obj.project.taskcustomattributes
+        elif isinstance(obj, Issue):
+            custom_att_manager = obj.project.issuecustomattributes
+        else:
+            raise NotImplementedError("Not implemented custom attributes for this object ({})".format(obj))
+
+        custom_attributes_values = {}
+        for custom_field in self.custom_fields:
+            if isinstance(custom_field['jira_field_name'], list):
+                data = issue['fields']
+                for key in custom_field['jira_field_name']:
+                    if data:
+                        data = data.get(key, {})
+            else:
+                data = issue['fields'].get(custom_field['jira_field_name'], None)
+
+            if data:
+                taiga_field = custom_att_manager.get(name=custom_field['taiga_field_name'])
+                custom_attributes_values[taiga_field.id] = data
+
+        if custom_attributes_values != {}:
+            obj.custom_attributes_values.attributes_values = custom_attributes_values
+            obj.custom_attributes_values.save()
 
     def _import_attachments(self, obj, issue, options):
         users_bindings = options.get('users_bindings', {})

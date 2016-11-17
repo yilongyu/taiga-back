@@ -107,21 +107,7 @@ class JiraAgileImporter(JiraImporterCommon):
             creation_template=project_template
         )
 
-        for model in [UserStoryCustomAttribute, TaskCustomAttribute, IssueCustomAttribute, EpicCustomAttribute]:
-            model.objects.create(
-                name="Due date",
-                description="Due date",
-                type="date",
-                order=1,
-                project=project
-            )
-            model.objects.create(
-                name="Priority",
-                description="Priority",
-                type="text",
-                order=1,
-                project=project
-            )
+        self._create_custom_fields(project)
 
         # for user in options.get('users_bindings', {}).values():
         #     if user != self._user:
@@ -227,14 +213,7 @@ class JiraAgileImporter(JiraImporterCommon):
                     )
                     RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
 
-                if issue['fields']['duedate'] or issue['fields']['priority']:
-                    custom_attributes_values = {}
-                    if issue['fields']['duedate']:
-                        custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                    if issue['fields']['priority']:
-                        custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                    us.custom_attributes_values.attributes_values = custom_attributes_values
-                    us.custom_attributes_values.save()
+                self._import_to_custom_fields(us, issue, options)
 
                 us.ref = issue['key'].split("-")[1]
                 UserStory.objects.filter(id=us.id).update(
@@ -254,8 +233,6 @@ class JiraAgileImporter(JiraImporterCommon):
 
     def _import_subtasks(self, project_id, project, us, issue, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = project.taskcustomattributes.get(name="Due date")
-        priority_field = project.taskcustomattributes.get(name="Priority")
 
         if len(issue['fields']['subtasks']) == 0:
             return
@@ -291,14 +268,7 @@ class JiraAgileImporter(JiraImporterCommon):
                     milestone=us.milestone,
                 )
 
-                if issue['fields']['duedate'] or issue['fields']['priority']:
-                    custom_attributes_values = {}
-                    if issue['fields']['duedate']:
-                        custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                    if issue['fields']['priority']:
-                        custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                    task.custom_attributes_values.attributes_values = custom_attributes_values
-                    task.custom_attributes_values.save()
+                self._import_to_custom_fields(task, issue, options)
 
                 task.ref = issue['key'].split("-")[1]
                 Task.objects.filter(id=task.id).update(
@@ -350,14 +320,7 @@ class JiraAgileImporter(JiraImporterCommon):
                     external_reference=external_reference,
                 )
 
-                if issue['fields']['duedate'] or issue['fields']['priority']:
-                    custom_attributes_values = {}
-                    if issue['fields']['duedate']:
-                        custom_attributes_values[due_date_field.id] = issue['fields']['duedate']
-                    if issue['fields']['priority']:
-                        custom_attributes_values[priority_field.id] = issue['fields']['priority']['name']
-                    epic.custom_attributes_values.attributes_values = custom_attributes_values
-                    epic.custom_attributes_values.save()
+                self._import_to_custom_fields(epic, issue, options)
 
                 epic.ref = issue['key'].split("-")[1]
                 Epic.objects.filter(id=epic.id).update(
