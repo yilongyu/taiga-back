@@ -61,7 +61,7 @@ class TrelloImporter:
         )
 
     def list_projects(self):
-        return self._client.get("/board", {"fields": "id,name"})
+        return self._client.get("/members/me/boards", {"fields": "id,name"})
 
     def list_users(self, project_id):
         return self._client.get("/board/{}/members".format(project_id), {"fields": "id,fullName"})

@@ -52,9 +52,10 @@ class Command(BaseCommand):
         else:
             (oauth_token, oauth_token_secret, url) = TrelloImporter.get_auth_url()
             print("Go to here and come with your token: {}".format(url))
-            oauth_verifier = input("Token: ")
+            oauth_verifier = input("Code: ")
             access_data = TrelloImporter.get_access_token(oauth_token, oauth_token_secret, oauth_verifier)
             token = access_data['oauth_token']
+            print("Access token: {}".format(token))
         importer = TrelloImporter(admin, token)
 
         if options.get('project_id', None):
