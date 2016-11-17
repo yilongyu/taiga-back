@@ -1,23 +1,18 @@
 import requests
-import json
-import datetime
 from urllib.parse import parse_qsl
 from oauthlib.oauth1 import SIGNATURE_RSA
 
-from collections import OrderedDict
 from requests_oauthlib import OAuth1
-from django.conf import settings
 from django.core.files.base import ContentFile
 from django.contrib.contenttypes.models import ContentType
 
-from django.template.defaultfilters import slugify
 from taiga.users.models import User
 from taiga.projects.models import Project, ProjectTemplate, Membership, Points
-from taiga.projects.userstories.models import UserStory, RolePoints
+from taiga.projects.userstories.models import UserStory
 from taiga.projects.tasks.models import Task
 from taiga.projects.issues.models import Issue
 from taiga.projects.milestones.models import Milestone
-from taiga.projects.epics.models import Epic, RelatedUserStory
+from taiga.projects.epics.models import Epic
 from taiga.projects.attachments.models import Attachment
 from taiga.projects.history.services import take_snapshot
 from taiga.projects.history.services import (make_diff_from_dicts,
@@ -27,10 +22,6 @@ from taiga.projects.history.services import (make_diff_from_dicts,
                                              FrozenDiff)
 from taiga.projects.history.models import HistoryEntry
 from taiga.projects.history.choices import HistoryType
-from taiga.projects.custom_attributes.models import (UserStoryCustomAttribute,
-                                                     TaskCustomAttribute,
-                                                     IssueCustomAttribute,
-                                                     EpicCustomAttribute)
 from taiga.mdrender.service import render as mdrender
 
 EPIC_COLORS = {
@@ -164,22 +155,26 @@ class JiraImporterCommon:
         users_bindings = options.get('users_bindings', {})
 
         for attachment in issue['fields']['attachment']:
-            data = self._client.raw_get(attachment['content'])
-            att = Attachment(
-                owner=users_bindings.get(attachment['author']['name'], self._user),
-                project=obj.project,
-                content_type=ContentType.objects.get_for_model(obj),
-                object_id=obj.id,
-                name=attachment['filename'],
-                size=attachment['size'],
-                created_date=attachment['created'],
-                is_deprecated=False,
-            )
-            att.attached_file.save(attachment['filename'], ContentFile(data), save=True)
+            try:
+                data = self._client.raw_get(attachment['content'])
+                att = Attachment(
+                    owner=users_bindings.get(attachment['author']['name'], self._user),
+                    project=obj.project,
+                    content_type=ContentType.objects.get_for_model(obj),
+                    object_id=obj.id,
+                    name=attachment['filename'],
+                    size=attachment['size'],
+                    created_date=attachment['created'],
+                    is_deprecated=False,
+                )
+                att.attached_file.save(attachment['filename'], ContentFile(data), save=True)
+            except Exception:
+                print("ERROR getting attachment url {}".format(attachment['content']))
+
 
     def _import_changelog(self, project, obj, issue, options):
         obj.cummulative_attachments = []
-        for history in issue['changelog']['histories']:
+        for history in sorted(issue['changelog']['histories'], key=lambda h: h['created']):
             self._import_history(project, obj, history, options)
 
     def _import_history(self, project, obj, history, options):
@@ -245,7 +240,11 @@ class JiraImporterCommon:
                     })
 
                 if history_item['from'] is not None:
-                    obj.cummulative_attachments.pop(obj.cummulative_attachments.index(history_item['fromString']))
+                    try:
+                        idx = obj.cummulative_attachments.index(history_item['fromString'])
+                        obj.cummulative_attachments.pop(idx)
+                    except ValueError:
+                        print("ERROR: Removing attachment that doesn't exist in the history ({})".format(history_item['fromString']))
                 if history_item['to'] is not None:
                     obj.cummulative_attachments.append(history_item['toString'])
 
@@ -330,6 +329,15 @@ class JiraImporterCommon:
                 elif isinstance(obj, UserStory):
                     try:
                         old_status = obj.project.us_statuses.get(name=history_item['fromString']).id
+                    except Exception:
+                        old_status = -1
+                    try:
+                        new_status = obj.project.us_statuses.get(name=history_item['toString']).id
+                    except Exception:
+                        new_status = -2
+                elif isinstance(obj, Issue):
+                    try:
+                        old_status = obj.project.issue_statuses.get(name=history_item['fromString']).id
                     except Exception:
                         old_status = -1
                     try:
@@ -426,6 +434,8 @@ class JiraImporterCommon:
                     priority_field = obj.project.taskcustomattributes.get(name="Priority")
                 elif isinstance(obj, UserStory):
                     priority_field = obj.project.userstorycustomattributes.get(name="Priority")
+                elif isinstance(obj, Issue):
+                    priority_field = obj.project.issuecustomattributes.get(name="Priority")
                 elif isinstance(obj, Epic):
                     priority_field = obj.project.epiccustomattributes.get(name="Priority")
 
@@ -441,7 +451,8 @@ class JiraImporterCommon:
                 }]
                 has_data = True
             else:
-                import pprint; pprint.pprint(history_item)
+                #import pprint; pprint.pprint(history_item)
+                pass
 
         if not has_data:
             return None
