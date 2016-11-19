@@ -382,10 +382,10 @@ class TrelloImporter:
             result['hist_type'] = HistoryType.create
         elif action['type'] == "updateCard":
             if 'desc' in action['data']['old']:
-                result['change_old']["description"] = str(action['data']['old']['desc'])
-                result['change_new']["description"] = str(action['data']['card']['desc'])
-                result['change_old']["description_html"] = mdrender(us.project, str(action['data']['old']['desc']))
-                result['change_new']["description_html"] = mdrender(us.project, str(action['data']['card']['desc']))
+                result['change_old']["description"] = str(action['data']['old'].get('desc', ''))
+                result['change_new']["description"] = str(action['data']['card'].get('desc', ''))
+                result['change_old']["description_html"] = mdrender(us.project, str(action['data']['old'].get('desc', '')))
+                result['change_new']["description_html"] = mdrender(us.project, str(action['data']['card'].get('desc', '')))
             if 'idList' in action['data']['old']:
                 old_status_name = statuses[action['data']['old']['idList']]['name']
                 result['change_old']["status"] = us.project.us_statuses.get(name=old_status_name).id
