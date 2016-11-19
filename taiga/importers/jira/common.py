@@ -186,21 +186,78 @@ class JiraImporterCommon:
                 order=1,
                 project=project
             )
+            model.objects.create(
+                name="Environment",
+                description="Environment",
+                type="text",
+                order=1,
+                project=project
+            )
+            model.objects.create(
+                name="Components",
+                description="Components",
+                type="text",
+                order=1,
+                project=project
+            )
+            model.objects.create(
+                name="Affects Version/s",
+                description="Affects Version/s",
+                type="text",
+                order=1,
+                project=project
+            )
+            model.objects.create(
+                name="Fix Version/s",
+                description="Fix Version/s",
+                type="text",
+                order=1,
+                project=project
+            )
         custom_fields.append({
+            "history_name": "duedate",
             "jira_field_name": "duedate",
             "taiga_field_name": "Due date",
         })
         custom_fields.append({
-            "jira_field_name": ["priority", "name"],
+            "history_name": "priority",
+            "jira_field_name": "priority",
             "taiga_field_name": "Priority",
+            "transform": lambda obj: obj.get('name', None)
         })
         custom_fields.append({
-            "jira_field_name": ["resolution", "name"],
+            "history_name": "resolution",
+            "jira_field_name": "resolution",
             "taiga_field_name": "Resolution",
+            "transform": lambda obj: obj.get('name', None)
         })
         custom_fields.append({
+            "history_name": "Resolution date",
             "jira_field_name": "resolutiondate",
             "taiga_field_name": "Resolution date",
+        })
+        custom_fields.append({
+            "history_name": "environment",
+            "jira_field_name": "environment",
+            "taiga_field_name": "Environment",
+        })
+        custom_fields.append({
+            "history_name": "Component",
+            "jira_field_name": "components",
+            "taiga_field_name": "Components",
+            "transform": lambda obj: ", ".join([c.get('name', None) for c in obj])
+        })
+        custom_fields.append({
+            "history_name": "Version",
+            "jira_field_name": "versions",
+            "taiga_field_name": "Affects Version/s",
+            "transform": lambda obj: ", ".join([c.get('name', None) for c in obj])
+        })
+        custom_fields.append({
+            "history_name": "Fix Version",
+            "jira_field_name": "fixVersions",
+            "taiga_field_name": "Fix Version/s",
+            "transform": lambda obj: ", ".join([c.get('name', None) for c in obj])
         })
 
         greenhopper_fields = {}
@@ -252,6 +309,7 @@ class JiraImporterCommon:
                     EpicCustomAttribute.objects.get_or_create(**custom_field_data)
 
                     custom_fields.append({
+                        "history_name": custom_field['name'],
                         "jira_field_name": custom_field['id'],
                         "taiga_field_name": custom_field['name'][:64],
                     })
@@ -273,13 +331,9 @@ class JiraImporterCommon:
 
         custom_attributes_values = {}
         for custom_field in self.custom_fields:
-            if isinstance(custom_field['jira_field_name'], list):
-                data = issue['fields']
-                for key in custom_field['jira_field_name']:
-                    if data:
-                        data = data.get(key, {})
-            else:
-                data = issue['fields'].get(custom_field['jira_field_name'], None)
+            data = issue['fields'].get(custom_field['jira_field_name'], None)
+            if data and "transform" in custom_field:
+                data = custom_field['transform'](data)
 
             if data:
                 taiga_field = custom_att_manager.get(name=custom_field['taiga_field_name'])
@@ -366,7 +420,7 @@ class JiraImporterCommon:
             "comment": "",
             "user": user
         }
-
+        custom_fields_by_names = {f["history_name"]: f for f in self.custom_fields}
         has_data = False
         for history_item in history['items']:
             if history_item['field'] == "Attachment":
@@ -399,26 +453,11 @@ class JiraImporterCommon:
                 result['change_old']["description_html"] = mdrender(obj.project, history_item['fromString'] or "")
                 result['change_new']["description_html"] = mdrender(obj.project, history_item['toString'] or "")
                 has_data = True
-            elif history_item['field'] == "duedate":
-                if isinstance(obj, Task):
-                    due_date_field = obj.project.taskcustomattributes.get(name="Due date")
-                elif isinstance(obj, UserStory):
-                    due_date_field = obj.project.userstorycustomattributes.get(name="Due date")
-                elif isinstance(obj, Epic):
-                    due_date_field = obj.project.epiccustomattributes.get(name="Due date")
-
-                result['change_old']["custom_attributes"] = [{
-                    "name": "Due date",
-                    "value": history_item['from'],
-                    "id": due_date_field.id
-                }]
-                result['change_new']["custom_attributes"] = [{
-                    "name": "Due date",
-                    "value": history_item['to'],
-                    "id": due_date_field.id
-                }]
-                has_data = True
             elif history_item['field'] == "Epic Link":
+                pass
+            elif history_item['field'] == "Workflow":
+                pass
+            elif history_item['field'] == "Link":
                 pass
             elif history_item['field'] == "labels":
                 result['change_old']["tags"] = history_item['fromString'].split()
@@ -567,30 +606,30 @@ class JiraImporterCommon:
                 if new_assigned_to == -2:
                     result['update_values']["users"]["-2"] = history_item['toString']
                 has_data = True
-            elif history_item['field'] == "priority":
+            elif history_item['field'] in custom_fields_by_names:
+                custom_field = custom_fields_by_names[history_item['field']]
                 if isinstance(obj, Task):
-                    priority_field = obj.project.taskcustomattributes.get(name="Priority")
+                    field_obj = obj.project.taskcustomattributes.get(name=custom_field['taiga_field_name'])
                 elif isinstance(obj, UserStory):
-                    priority_field = obj.project.userstorycustomattributes.get(name="Priority")
+                    field_obj = obj.project.userstorycustomattributes.get(name=custom_field['taiga_field_name'])
                 elif isinstance(obj, Issue):
-                    priority_field = obj.project.issuecustomattributes.get(name="Priority")
+                    field_obj = obj.project.issuecustomattributes.get(name=custom_field['taiga_field_name'])
                 elif isinstance(obj, Epic):
-                    priority_field = obj.project.epiccustomattributes.get(name="Priority")
+                    field_obj = obj.project.epiccustomattributes.get(name=custom_field['taiga_field_name'])
 
                 result['change_old']["custom_attributes"] = [{
-                    "name": "Priority",
+                    "name": custom_field['taiga_field_name'],
                     "value": history_item['fromString'],
-                    "id": priority_field.id
+                    "id": field_obj.id
                 }]
                 result['change_new']["custom_attributes"] = [{
-                    "name": "Priority",
+                    "name": custom_field['taiga_field_name'],
                     "value": history_item['toString'],
-                    "id": priority_field.id
+                    "id": field_obj.id
                 }]
                 has_data = True
             else:
-                #import pprint; pprint.pprint(history_item)
-                pass
+                import pprint; pprint.pprint(history_item)
 
         if not has_data:
             return None
