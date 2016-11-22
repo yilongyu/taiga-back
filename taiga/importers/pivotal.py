@@ -51,6 +51,14 @@ class PivotalClient:
 
         return response.json()
 
+    def get_attachment(self, attachment_id):
+        headers = {
+            'X-TrackerToken': self.token
+        }
+        url = "https://www.pivotaltracker.com/file_attachments/{}/download".format(attachment_id)
+        response = requests.get(url, headers=headers)
+        return response.content
+
 
 class PivotalImporter:
     def __init__(self, user, token):
@@ -371,28 +379,22 @@ class PivotalImporter:
             )
             take_snapshot(taiga_task, comment="", user=None, delete=False)
 
-    # def _import_attachments(self, us, card, options):
-    #     users_bindings = options.get('users_bindings', {})
-    #     for attachment in card['attachments']:
-    #         if attachment['bytes'] is None:
-    #             continue
-    #         data = requests.get(attachment['url'])
-    #         att = Attachment(
-    #             owner=users_bindings.get(attachment['idMember'], self._user),
-    #             project=us.project,
-    #             content_type=ContentType.objects.get_for_model(UserStory),
-    #             object_id=us.id,
-    #             name=attachment['name'],
-    #             size=attachment['bytes'],
-    #             created_date=attachment['date'],
-    #             is_deprecated=False,
-    #         )
-    #         att.attached_file.save(attachment['name'], ContentFile(data.content), save=True)
-    #
-    #         UserStory.objects.filter(id=us.id, created_date__gt=attachment['date']).update(
-    #             created_date=attachment['date']
-    #         )
-    #
+    def _import_attachment(self, obj, attachment_id, attachment_name, created_at, person_id, options):
+        users_bindings = options.get('users_bindings', {})
+
+        data = self._client.get_attachment(attachment_id)
+        att = Attachment(
+            owner=users_bindings.get(person_id, self._user),
+            project=obj.project,
+            content_type=ContentType.objects.get_for_model(obj),
+            object_id=obj.id,
+            name=attachment_name,
+            size=len(data),
+            created_date=created_at,
+            is_deprecated=False,
+        )
+        att.attached_file.save(attachment_name, ContentFile(data), save=True)
+
     def _import_user_story_activity(self, project_id, us, story, options):
         included_activity = [
             "comment_create_activity", "comment_delete_activity",
@@ -476,8 +478,20 @@ class PivotalImporter:
             # "story_update_activity"
         if activity['kind'] == "comment_create_activity":
             for change in activity['changes']:
-                if change['change_type'] == "comment":
-                    result['comment'] = str(change['new_values']['text'])
+                if change['change_type'] == "create" and change['kind'] == "comment":
+                    if 'text' in change['new_values']:
+                        result['comment'] = str(change['new_values']['text'])
+                    if change['new_values']['file_attachments']:
+                        for (attachment_id, attachment_name) in zip(change['new_values']['file_attachment_ids'], change['new_values']['file_attachments']):
+                            self._import_attachment(
+                                obj,
+                                attachment_id,
+                                attachment_name,
+                                change['new_values']['created_at'],
+                                change['new_values']['person_id'],
+                                options
+                            )
+                    # TODO: Include attachment import
         elif activity['kind'] == "story_create_activity":
             UserStory.objects.filter(id=obj.id, created_date__gt=activity['occurred_at']).update(
                 created_date=activity['occurred_at'],
@@ -501,7 +515,6 @@ class PivotalImporter:
             return None
         elif activity['kind'] == "story_update_activity":
             for change in activity['changes']:
-                import pprint; pprint.pprint(activity)
                 if change['change_type'] != "update" or change['kind'] != "story":
                     continue
 
