@@ -260,7 +260,29 @@ class PivotalImporter:
         counter = 0
         offset = 0
         while True:
-            stories = self._client.get("/projects/{}/stories".format(project_id), {"envelope": "true", "limit": 300, "offset": offset})
+            stories = self._client.get("/projects/{}/stories".format(project_id), {
+                "envelope": "true",
+                "limit": 300,
+                "offset": offset,
+                "fields": ",".join([
+                    "name",
+                    "description",
+                    "estimate",
+                    "story_type",
+                    "current_state",
+                    "accepted_at",
+                    "deadline",
+                    "requested_by_id",
+                    "owner_ids",
+                    "labels(id,name)",
+                    "comments(:default,file_attachments,google_attachments,person)",
+                    "tasks",
+                    "integration_id",
+                    "external_id",
+                    "follower_ids",
+                    "created_at",
+                    "updated_at"
+                ])})
             offset += 300
             for story in stories['data']:
                 tags = []
@@ -319,18 +341,28 @@ class PivotalImporter:
                             user_story=us,
                             order=us.backlog_order
                         )
-            #     self._import_attachments(us, card, options)
                 self._import_tasks(project_id, us, story)
                 self._import_user_story_activity(project_id, us, story, options)
-                # self._import_comments(project_id, us, story, options)
+                self._import_comments(project_id, us, story, options)
                 counter += 1
 
             if len(stories['data']) < 300:
                 break
 
     def _import_epics_data(self, project_id, project, options):
+        users_bindings = options.get('users_bindings', {})
         counter = 0
-        epics = self._client.get("/projects/{}/epics".format(project_id))
+
+        epics = self._client.get("/projects/{}/epics".format(project_id), {
+            "fields": ",".join([
+                "name",
+                "description",
+                "comments(:default,file_attachments,google_attachments,person)",
+                "follower_ids",
+                "created_at",
+                "updated_at"
+            ])})
+
         for epic in epics:
             external_reference = None
             if options.get('keep_external_reference', False):
@@ -353,6 +385,7 @@ class PivotalImporter:
                 created_date=epic['created_at']
             )
             take_snapshot(taiga_epic, comment="", user=None, delete=False)
+            self._import_comments(project_id, taiga_epic, epic, options)
         #     self._import_attachments(us, card, options)
         #     self._import_activity(us, card, statuses, options)
             counter += 1
@@ -394,6 +427,28 @@ class PivotalImporter:
             is_deprecated=False,
         )
         att.attached_file.save(attachment_name, ContentFile(data), save=True)
+
+    def _import_comments(self, project_id, obj, story, options):
+        users_bindings = options.get('users_bindings', {})
+
+        for comment in story['comments']:
+            if 'text' in comment:
+                snapshot = take_snapshot(
+                    obj,
+                    comment=comment['text'],
+                    user=users_bindings.get(comment['person']['id'], User(full_name=comment['person']['name'])),
+                    delete=False
+                )
+                HistoryEntry.objects.filter(id=snapshot.id).update(created_at=comment['created_at'])
+            for attachment in comment['file_attachments']:
+                self._import_attachment(
+                    obj,
+                    attachment['id'],
+                    attachment['filename'],
+                    comment['created_at'],
+                    comment['person_id'],
+                    options
+                )
 
     def _import_user_story_activity(self, project_id, us, story, options):
         included_activity = [
@@ -476,23 +531,8 @@ class PivotalImporter:
             # "label_update_activity",
             # "story_delete_activity", "story_move_activity",
             # "story_update_activity"
-        if activity['kind'] == "comment_create_activity":
-            for change in activity['changes']:
-                if change['change_type'] == "create" and change['kind'] == "comment":
-                    if 'text' in change['new_values']:
-                        result['comment'] = str(change['new_values']['text'])
-                    if change['new_values']['file_attachments']:
-                        for (attachment_id, attachment_name) in zip(change['new_values']['file_attachment_ids'], change['new_values']['file_attachments']):
-                            self._import_attachment(
-                                obj,
-                                attachment_id,
-                                attachment_name,
-                                change['new_values']['created_at'],
-                                change['new_values']['person_id'],
-                                options
-                            )
-                    # TODO: Include attachment import
-        elif activity['kind'] == "story_create_activity":
+
+        if activity['kind'] == "story_create_activity":
             UserStory.objects.filter(id=obj.id, created_date__gt=activity['occurred_at']).update(
                 created_date=activity['occurred_at'],
                 owner=users_bindings.get(activity["performed_by"]["id"], self._user)
