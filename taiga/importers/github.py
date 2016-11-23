@@ -25,7 +25,7 @@ class GithubImporter:
     def __init__(self, user, token, import_closed_data=False):
         self._import_closed_data = import_closed_data
         self._user = user
-        self._client = Github(token)
+        self._client = Github(token, per_page=100)
 
     def list_projects(self):
         user = self._client.get_user("jespino")
@@ -158,7 +158,7 @@ class GithubImporter:
 
     def _import_user_stories_data(self, project, repo, options):
         users_bindings = options.get('users_bindings', {})
-        issues = chain(repo.get_issues(state="open"), repo.get_issues(state="closed"))
+        issues = repo.get_issues(state="all")
 
         for issue in issues:
             tags = []
@@ -206,7 +206,7 @@ class GithubImporter:
 
     def _import_issues_data(self, project, repo, options):
         users_bindings = options.get('users_bindings', {})
-        issues = chain(repo.get_issues(state="open"), repo.get_issues(state="closed"))
+        issues = repo.get_issues(state="all")
 
         for issue in issues:
             tags = []
