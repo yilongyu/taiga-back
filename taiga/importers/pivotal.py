@@ -78,7 +78,17 @@ class PivotalImporter:
         # self._import_user_stories_data(project_id, project, options)
 
     def _import_project_data(self, project_id, options):
-        project = self._client.get("/projects/{}".format(project_id))
+        project = self._client.get(
+            "/projects/{}".format(project_id),
+            {
+                "fields": ",".join([
+                    "point_scale",
+                    "name",
+                    "description",
+                    "labels(name)"
+                ])
+            }
+        )
 
         project_template = ProjectTemplate.objects.get(slug=options['template'])
         project_template.is_epics_activated = True
@@ -198,9 +208,8 @@ class PivotalImporter:
             "order": 70,
         }]
 
-        labels = self._client.get("/projects/{}/labels".format(project_id))
         tags_colors = []
-        for label in labels:
+        for label in project['labels']:
             name = label['name'].lower()
             tags_colors.append([name, None])
 
@@ -270,15 +279,12 @@ class PivotalImporter:
                     "estimate",
                     "story_type",
                     "current_state",
-                    "accepted_at",
                     "deadline",
                     "requested_by_id",
                     "owner_ids",
                     "labels(id,name)",
-                    "comments(:default,file_attachments,google_attachments,person)",
-                    "tasks",
-                    "integration_id",
-                    "external_id",
+                    "comments(text,file_attachments,google_attachments,person,created_at)",
+                    "tasks(id,description,position,complete,created_at,updated_at)",
                     "follower_ids",
                     "created_at",
                     "updated_at"
@@ -318,7 +324,7 @@ class PivotalImporter:
                 RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
 
                 if len(story['owner_ids']) > 1:
-                    for watcher in story['owner_ids'][1:]:
+                    for watcher in list(set(story['owner_ids'][1:] + story['follower_ids'])):
                         watcher_user = users_bindings.get(watcher, None)
                         if watcher_user:
                             us.add_watcher(watcher_user)
@@ -357,7 +363,7 @@ class PivotalImporter:
             "fields": ",".join([
                 "name",
                 "description",
-                "comments(:default,file_attachments,google_attachments,person)",
+                "comments(text,file_attachments,google_attachments,person,created_at)",
                 "follower_ids",
                 "created_at",
                 "updated_at"
@@ -391,11 +397,7 @@ class PivotalImporter:
             counter += 1
 
     def _import_tasks(self, project_id, us, story):
-        tasks = self._client.get("/projects/{}/stories/{}/tasks".format(
-            project_id,
-            story['id']
-        ))
-        for task in tasks:
+        for task in story['tasks']:
             taiga_task = Task.objects.create(
                 subject=task['description'],
                 status=us.project.task_statuses.get(slug="complete" if task['complete'] else "incomplete"),
@@ -446,7 +448,7 @@ class PivotalImporter:
                     attachment['id'],
                     attachment['filename'],
                     comment['created_at'],
-                    comment['person_id'],
+                    comment['person']['id'],
                     options
                 )
 
