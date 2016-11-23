@@ -72,20 +72,44 @@ class PivotalImporter:
         return self._client.get("/projects/{}/memberships".format(project_id))
 
     def import_project(self, project_id, options={"template": "scrum", "users_bindings": {}, "keep_external_reference": False}):
-        project = project = self._import_project_data(project_id, options)
-        self._import_epics_data(project_id, project, options)
-        self._import_user_stories_data(project_id, project, options)
-        # self._import_user_stories_data(project_id, project, options)
+        (project, project_data) = self._import_project_data(project_id, options)
+        self._import_epics_data(project_data, project, options)
+        self._import_user_stories_data(project_data, project, options)
 
     def _import_project_data(self, project_id, options):
-        project = self._client.get(
+        project_data = self._client.get(
             "/projects/{}".format(project_id),
             {
                 "fields": ",".join([
                     "point_scale",
                     "name",
                     "description",
-                    "labels(name)"
+                    "labels(name)",
+                ])
+            }
+        )
+        project_data['iterations'] = self._client.get(
+            "/projects/{}/iterations".format(project_id),
+            {
+                "fields": ",".join([
+                    "number",
+                    "start",
+                    "finish",
+                    "stories",
+                ])
+            }
+        )
+        project_data['epics'] = self._client.get(
+            "/projects/{}/epics".format(project_data['id']),
+            {
+                "fields": ",".join([
+                    "name",
+                    "label",
+                    "description",
+                    "comments(text,file_attachments,google_attachments,person,created_at)",
+                    "follower_ids",
+                    "created_at",
+                    "updated_at"
                 ])
             }
         )
@@ -100,7 +124,7 @@ class PivotalImporter:
         }]
 
         counter = 2
-        for points in project['point_scale'].split(","):
+        for points in project_data['point_scale'].split(","):
             project_template.points.append({
                 "value": int(points),
                 "name": points,
@@ -209,13 +233,13 @@ class PivotalImporter:
         }]
 
         tags_colors = []
-        for label in project['labels']:
+        for label in project_data['labels']:
             name = label['name'].lower()
             tags_colors.append([name, None])
 
         project = Project.objects.create(
-            name=project['name'],
-            description=project.get('description', ''),
+            name=project_data['name'],
+            description=project_data.get('description', ''),
             owner=self._user,
             tags_colors=tags_colors,
             creation_template=project_template
@@ -237,8 +261,7 @@ class PivotalImporter:
                     is_admin=False,
                 )
 
-        iterations = self._client.get("/projects/{}/iterations".format(project_id))
-        for iteration in iterations:
+        for iteration in project_data['iterations']:
             milestone = Milestone.objects.create(
                 name="Sprint {}".format(iteration['number']),
                 slug="sprint-{}".format(iteration['number']),
@@ -251,15 +274,14 @@ class PivotalImporter:
                 created_date=iteration['start'],
                 modified_date=iteration['start'],
             )
-        return project
+        return (project, project_data)
 
-    def _import_user_stories_data(self, project_id, project, options):
+    def _import_user_stories_data(self, project_data, project, options):
         users_bindings = options.get('users_bindings', {})
-        epics = {e['label']['id']: e for e in self._client.get("/projects/{}/epics".format(project_id))}
+        epics = {e['label']['id']: e for e in project_data['epics']}
         due_date_field = project.userstorycustomattributes.first()
-        iterations = self._client.get("/projects/{}/iterations".format(project_id))
         story_milestone_binding = {}
-        for iteration in iterations:
+        for iteration in project_data['iterations']:
             for story in iteration['stories']:
                 story_milestone_binding[story['id']] = Milestone.objects.get(
                     project=project,
@@ -269,7 +291,7 @@ class PivotalImporter:
         counter = 0
         offset = 0
         while True:
-            stories = self._client.get("/projects/{}/stories".format(project_id), {
+            stories = self._client.get("/projects/{}/stories".format(project_data['id']), {
                 "envelope": "true",
                 "limit": 300,
                 "offset": offset,
@@ -347,29 +369,19 @@ class PivotalImporter:
                             user_story=us,
                             order=us.backlog_order
                         )
-                self._import_tasks(project_id, us, story)
-                self._import_user_story_activity(project_id, us, story, options)
-                self._import_comments(project_id, us, story, options)
+                self._import_tasks(project_data, us, story)
+                self._import_user_story_activity(project_data, us, story, options)
+                self._import_comments(project_data, us, story, options)
                 counter += 1
 
             if len(stories['data']) < 300:
                 break
 
-    def _import_epics_data(self, project_id, project, options):
+    def _import_epics_data(self, project_data, project, options):
         users_bindings = options.get('users_bindings', {})
         counter = 0
 
-        epics = self._client.get("/projects/{}/epics".format(project_id), {
-            "fields": ",".join([
-                "name",
-                "description",
-                "comments(text,file_attachments,google_attachments,person,created_at)",
-                "follower_ids",
-                "created_at",
-                "updated_at"
-            ])})
-
-        for epic in epics:
+        for epic in project_data['epics']:
             external_reference = None
             if options.get('keep_external_reference', False):
                 external_reference = ["pivotal", epic['url']]
@@ -391,12 +403,12 @@ class PivotalImporter:
                 created_date=epic['created_at']
             )
             take_snapshot(taiga_epic, comment="", user=None, delete=False)
-            self._import_comments(project_id, taiga_epic, epic, options)
+            self._import_comments(project_data, taiga_epic, epic, options)
         #     self._import_attachments(us, card, options)
         #     self._import_activity(us, card, statuses, options)
             counter += 1
 
-    def _import_tasks(self, project_id, us, story):
+    def _import_tasks(self, project_data, us, story):
         for task in story['tasks']:
             taiga_task = Task.objects.create(
                 subject=task['description'],
@@ -430,7 +442,7 @@ class PivotalImporter:
         )
         att.attached_file.save(attachment_name, ContentFile(data), save=True)
 
-    def _import_comments(self, project_id, obj, story, options):
+    def _import_comments(self, project_data, obj, story, options):
         users_bindings = options.get('users_bindings', {})
 
         for comment in story['comments']:
@@ -452,7 +464,7 @@ class PivotalImporter:
                     options
                 )
 
-    def _import_user_story_activity(self, project_id, us, story, options):
+    def _import_user_story_activity(self, project_data, us, story, options):
         included_activity = [
             "comment_create_activity", "comment_delete_activity",
             "comment_update_activity", "iteration_update_activity",
@@ -466,7 +478,7 @@ class PivotalImporter:
         while True:
             activities = self._client.get(
                 "/projects/{}/stories/{}/activity".format(
-                    project_id,
+                    project_data['id'],
                     story['id'],
                 ),
                 {"envelope": "true", "limit": 300, "offset": offset}
