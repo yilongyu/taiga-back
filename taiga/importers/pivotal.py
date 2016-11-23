@@ -425,7 +425,7 @@ class PivotalImporter:
 
             take_snapshot(taiga_epic, comment="", user=None, delete=False)
             self._import_comments(project_data, taiga_epic, epic, options)
-        #     self._import_activity(us, card, statuses, options)
+            self._import_epic_activity(project_data, taiga_epic, epic, options)
             counter += 1
 
     def _import_tasks(self, project_data, us, story):
@@ -485,15 +485,6 @@ class PivotalImporter:
                 )
 
     def _import_user_story_activity(self, project_data, us, story, options):
-        included_activity = [
-            "comment_create_activity", "comment_delete_activity",
-            "comment_update_activity", "iteration_update_activity",
-            "label_create_activity", "label_delete_activity",
-            "label_update_activity", "story_create_activity",
-            "story_delete_activity", "story_move_activity",
-            "story_update_activity"
-        ]
-
         offset = 0
         while True:
             activities = self._client.get(
@@ -505,14 +496,29 @@ class PivotalImporter:
             )
             offset += 300
             for activity in activities['data']:
-                if activity['kind'] in included_activity:
-                    self._import_activity(us, activity, options)
+                self._import_activity(us, activity, options)
+
+            if len(activities['data']) < 300:
+                break
+
+    def _import_epic_activity(self, project_data, taiga_epic, epic, options):
+        offset = 0
+        while True:
+            activities = self._client.get(
+                "/projects/{}/epics/{}/activity".format(
+                    project_data['id'],
+                    epic['id'],
+                ),
+                {"envelope": "true", "limit": 300, "offset": offset}
+            )
+            offset += 300
+            for activity in activities['data']:
+                self._import_activity(taiga_epic, activity, options)
+
             if len(activities['data']) < 300:
                 break
 
     def _import_activity(self, obj, activity, options):
-        key = make_key_from_model_object(obj)
-        typename = get_typename_for_model_class(UserStory)
         activity_data = self._transform_activity_data(obj, activity, options)
         if activity_data is None:
             return
@@ -522,6 +528,9 @@ class PivotalImporter:
         hist_type = activity_data['hist_type']
         comment = activity_data['comment']
         user = activity_data['user']
+
+        key = make_key_from_model_object(activity_data['obj'])
+        typename = get_typename_for_model_class(type(activity_data['obj']))
 
         diff = make_diff_from_dicts(change_old, change_new)
         fdiff = FrozenDiff(key, diff, {})
@@ -557,40 +566,25 @@ class PivotalImporter:
             "change_new": {},
             "hist_type": HistoryType.change,
             "comment": "",
-            "user": user
+            "user": user,
+            "obj": obj
         }
-
-            # "comment_create_activity", "comment_delete_activity",
-            # "comment_update_activity", "iteration_update_activity",
-            # "label_create_activity", "label_delete_activity",
-            # "label_update_activity",
-            # "story_delete_activity", "story_move_activity",
-            # "story_update_activity"
 
         if activity['kind'] == "story_create_activity":
             UserStory.objects.filter(id=obj.id, created_date__gt=activity['occurred_at']).update(
                 created_date=activity['occurred_at'],
                 owner=users_bindings.get(activity["performed_by"]["id"], self._user)
             )
-            result['hist_type'] = HistoryType.create
             return None
-        elif activity['kind'] == "copyCommentCard":
-            # UserStory.objects.filter(id=us.id, created_date__gt=activity['date']).update(
-            #     created_date=activity['date'],
-            #     owner=users_bindings.get(activity["idMemberCreator"], self._user)
-            # )
-            # result['hist_type'] = HistoryType.create
+        elif activity['kind'] == "epic_create_activity":
+            Epic.objects.filter(id=obj.id, created_date__gt=activity['occurred_at']).update(
+                created_date=activity['occurred_at'],
+                owner=users_bindings.get(activity["performed_by"]["id"], self._user)
+            )
             return None
-        elif activity['kind'] == "createCard":
-            # UserStory.objects.filter(id=us.id, created_date__gt=activity['date']).update(
-            #     created_date=activity['date'],
-            #     owner=users_bindings.get(activity["idMemberCreator"], self._user)
-            # )
-            # result['hist_type'] = HistoryType.create
-            return None
-        elif activity['kind'] == "story_update_activity":
+        elif activity['kind'] in ["story_update_activity", "epic_update_activity"]:
             for change in activity['changes']:
-                if change['change_type'] != "update" or change['kind'] != "story":
+                if change['change_type'] != "update" or change['kind'] not in ["story", "epic"]:
                     continue
 
                 if 'description' in change['new_values']:
@@ -600,8 +594,32 @@ class PivotalImporter:
                     result['change_new']["description_html"] = mdrender(obj.project, str(change['new_values']['description']))
 
                 if 'estimate' in change['new_values']:
-                    #import pprint; pprint.pprint(activity)
-                    pass
+                    old_points = None
+                    if change['original_values']['estimate']:
+                        estimation = change['original_values']['estimate']
+                        (old_points, _) = Points.objects.get_or_create(
+                            project=obj.project,
+                            value=estimation,
+                            defaults={
+                                "name": str(estimation),
+                                "order": estimation,
+                            }
+                        )
+                        old_points = old_points.id
+                    new_points = None
+                    if change['new_values']['estimate']:
+                        estimation = change['new_values']['estimate']
+                        (new_points, _) = Points.objects.get_or_create(
+                            project=obj.project,
+                            value=estimation,
+                            defaults={
+                                "name": str(estimation),
+                                "order": estimation,
+                            }
+                        )
+                        new_points = new_points.id
+                    result['change_old']["points"] = {obj.project.roles.get(slug="main").id: old_points}
+                    result['change_new']["points"] = {obj.project.roles.get(slug="main").id: new_points}
 
                 if 'name' in change['new_values']:
                     result['change_old']["subject"] = change['original_values']['name']
@@ -615,18 +633,66 @@ class PivotalImporter:
                     result['change_old']["status"] = obj.project.us_statuses.get(slug=change['original_values']['current_state']).id
                     result['change_new']["status"] = obj.project.us_statuses.get(slug=change['new_values']['current_state']).id
 
-                # if 'due' in activity['data']['old']:
-                #     result['change_old']["custom_attributes"] = [{
-                #         "name": "Due date",
-                #         "value": activity['data']['old']['due'],
-                #         "id": due_date_field.id
-                #     }]
-                #     result['change_new']["custom_attributes"] = [{
-                #         "name": "Due date",
-                #         "value": activity['data']['card']['due'],
-                #         "id": due_date_field.id
-                #     }]
-                #
-                # if result['change_old'] == {}:
-                #     return None
+                if 'story_type' in change['new_values']:
+                    if "custom_attributes" not in result['change_old']:
+                        result['change_old']["custom_attributes"] = []
+                    if "custom_attributes" not in result['change_new']:
+                        result['change_new']["custom_attributes"] = []
+
+                    result['change_old']["custom_attributes"].append({
+                        "name": "Type",
+                        "value": change['original_values']['story_type'],
+                        "id": story_type_field.id
+                    })
+                    result['change_new']["custom_attributes"].append({
+                        "name": "Type",
+                        "value": change['new_values']['story_type'],
+                        "id": story_type_field.id
+                    })
+
+                if 'deadline' in change['new_values']:
+                    if "custom_attributes" not in result['change_old']:
+                        result['change_old']["custom_attributes"] = []
+                    if "custom_attributes" not in result['change_new']:
+                        result['change_new']["custom_attributes"] = []
+
+                    result['change_old']["custom_attributes"].append({
+                        "name": "Due date",
+                        "value": change['original_values']['deadline'],
+                        "id": due_date_field.id
+                    })
+                    result['change_new']["custom_attributes"].append({
+                        "name": "Due date",
+                        "value": change['new_values']['deadline'],
+                        "id": due_date_field.id
+                    })
+
+                # TODO: Process owners_ids
+
+        elif activity['kind'] == "task_create_activity":
+            return None
+        elif activity['kind'] == "task_update_activity":
+            for change in activity['changes']:
+                if change['change_type'] != "update" or change['kind'] != "task":
+                    continue
+
+                try:
+                    task = Task.objects.get(project=obj.project, ref=change['id'])
+                    if 'description' in change['new_values']:
+                        result['change_old']["subject"] = change['original_values']['description']
+                        result['change_new']["subject"] = change['new_values']['description']
+                        result['obj'] = task
+                    if 'complete' in change['new_values']:
+                        result['change_old']["status"] = obj.project.task_statuses.get(slug="complete" if change['original_values']['complete'] else "incomplete").id
+                        result['change_new']["status"] = obj.project.task_statuses.get(slug="complete" if change['new_values']['complete'] else "incomplete").id
+                        result['obj'] = task
+                except Task.DoesNotExist:
+                    return None
+
+        elif activity['kind'] == "comment_create_activity":
+            return None
+        elif activity['kind'] == "comment_update_activity":
+            return None
+        elif activity['kind'] == "story_move_activity":
+            return None
         return result
