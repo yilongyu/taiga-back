@@ -1,11 +1,9 @@
 from requests_oauthlib import OAuth1Session, OAuth1
-from django.conf import settings
 from django.core.files.base import ContentFile
 from django.contrib.contenttypes.models import ContentType
 import requests
 import datetime
 
-from django.template.defaultfilters import slugify
 from taiga.users.models import User
 from taiga.projects.models import Project, ProjectTemplate, Membership, Points
 from taiga.projects.userstories.models import UserStory, RolePoints
@@ -109,7 +107,8 @@ class PivotalImporter:
                     "comments(text,file_attachments,google_attachments,person,created_at)",
                     "follower_ids",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "url",
                 ])
             }
         )
@@ -246,10 +245,17 @@ class PivotalImporter:
         )
 
         UserStoryCustomAttribute.objects.create(
-            name="Due",
+            name="Due date",
             description="Due date",
             type="date",
             order=1,
+            project=project
+        )
+        UserStoryCustomAttribute.objects.create(
+            name="Type",
+            description="Story type",
+            type="text",
+            order=2,
             project=project
         )
         for user in options.get('users_bindings', {}).values():
@@ -279,7 +285,8 @@ class PivotalImporter:
     def _import_user_stories_data(self, project_data, project, options):
         users_bindings = options.get('users_bindings', {})
         epics = {e['label']['id']: e for e in project_data['epics']}
-        due_date_field = project.userstorycustomattributes.first()
+        due_date_field = project.userstorycustomattributes.get(name="Due date")
+        story_type_field = project.userstorycustomattributes.first(name="Type")
         story_milestone_binding = {}
         for iteration in project_data['iterations']:
             for story in iteration['stories']:
@@ -309,7 +316,8 @@ class PivotalImporter:
                     "tasks(id,description,position,complete,created_at,updated_at)",
                     "follower_ids",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "url",
                 ])})
             offset += 300
             for story in stories['data']:
@@ -346,13 +354,20 @@ class PivotalImporter:
                 RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
 
                 if len(story['owner_ids']) > 1:
-                    for watcher in list(set(story['owner_ids'][1:] + story['follower_ids'])):
-                        watcher_user = users_bindings.get(watcher, None)
-                        if watcher_user:
-                            us.add_watcher(watcher_user)
+                    watchers = list(set(story['owner_ids'][1:] + story['follower_ids']))
+                else:
+                    watchers = story['follower_ids']
+
+                for watcher in watchers:
+                    watcher_user = users_bindings.get(watcher, None)
+                    if watcher_user:
+                        us.add_watcher(watcher_user)
 
                 if story.get('deadline', None):
                     us.custom_attributes_values.attributes_values = {due_date_field.id: story['deadline']}
+                    us.custom_attributes_values.save()
+                if story.get('story_type', None):
+                    us.custom_attributes_values.attributes_values = {story_type_field.id: story['story_type']}
                     us.custom_attributes_values.save()
 
                 UserStory.objects.filter(id=us.id).update(
@@ -402,9 +417,14 @@ class PivotalImporter:
                 modified_date=epic['updated_at'],
                 created_date=epic['created_at']
             )
+
+            for watcher in epic['follower_ids']:
+                watcher_user = users_bindings.get(watcher, None)
+                if watcher_user:
+                    taiga_epic.add_watcher(watcher_user)
+
             take_snapshot(taiga_epic, comment="", user=None, delete=False)
             self._import_comments(project_data, taiga_epic, epic, options)
-        #     self._import_attachments(us, card, options)
         #     self._import_activity(us, card, statuses, options)
             counter += 1
 
@@ -524,7 +544,8 @@ class PivotalImporter:
 
     def _transform_activity_data(self, obj, activity, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = obj.project.userstorycustomattributes.first()
+        due_date_field = project.userstorycustomattributes.get(name="Due date")
+        story_type_field = project.userstorycustomattributes.first(name="Type")
 
         user = {"pk": None, "name": activity.get('performed_by', {}).get('name', None)}
         taiga_user = users_bindings.get(activity.get('performed_by', {}).get('id', None), None)
@@ -596,12 +617,12 @@ class PivotalImporter:
 
                 # if 'due' in activity['data']['old']:
                 #     result['change_old']["custom_attributes"] = [{
-                #         "name": "Due",
+                #         "name": "Due date",
                 #         "value": activity['data']['old']['due'],
                 #         "id": due_date_field.id
                 #     }]
                 #     result['change_new']["custom_attributes"] = [{
-                #         "name": "Due",
+                #         "name": "Due date",
                 #         "value": activity['data']['card']['due'],
                 #         "id": due_date_field.id
                 #     }]
