@@ -71,7 +71,7 @@ class Command(BaseCommand):
             print("Add the username or email for next pivotal users:")
             for user in importer.list_users(project_id):
                 try:
-                    users_bindings[user['id']] = User.objects.get(Q(email=user['person']['email']))
+                    users_bindings[user['id']] = User.objects.get(Q(email=user['person'].get('email', "not-valid")))
                     break
                 except User.DoesNotExist:
                     pass

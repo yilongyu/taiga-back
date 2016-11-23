@@ -286,7 +286,7 @@ class PivotalImporter:
         users_bindings = options.get('users_bindings', {})
         epics = {e['label']['id']: e for e in project_data['epics']}
         due_date_field = project.userstorycustomattributes.get(name="Due date")
-        story_type_field = project.userstorycustomattributes.first(name="Type")
+        story_type_field = project.userstorycustomattributes.get(name="Type")
         story_milestone_binding = {}
         for iteration in project_data['iterations']:
             for story in iteration['stories']:
@@ -350,7 +350,7 @@ class PivotalImporter:
                     milestone=story_milestone_binding.get(story['id'], None)
                 )
 
-                points = Points.objects.get(project=project, value=story['estimate'])
+                points = Points.objects.get(project=project, value=story.get('estimate', None))
                 RolePoints.objects.filter(user_story=us, role__slug="main").update(points_id=points.id)
 
                 if len(story['owner_ids']) > 1:
@@ -544,8 +544,8 @@ class PivotalImporter:
 
     def _transform_activity_data(self, obj, activity, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = project.userstorycustomattributes.get(name="Due date")
-        story_type_field = project.userstorycustomattributes.first(name="Type")
+        due_date_field = obj.project.userstorycustomattributes.get(name="Due date")
+        story_type_field = obj.project.userstorycustomattributes.get(name="Type")
 
         user = {"pk": None, "name": activity.get('performed_by', {}).get('name', None)}
         taiga_user = users_bindings.get(activity.get('performed_by', {}).get('id', None), None)
