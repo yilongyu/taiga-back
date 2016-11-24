@@ -41,6 +41,40 @@ EPIC_COLORS = {
     "ghx-label-9": "#f15c75",
 }
 
+
+def links_to_richtext(importer, issue, links):
+    richtext = ""
+    importing_project_key = issue['key'].split("-")[0]
+    for link in links:
+        if "inwardIssue" in link:
+            (project_key, issue_key) = link['inwardIssue']['key'].split("-")
+            action = link['type']['inward']
+        elif "outwardIssue" in link:
+            (project_key, issue_key) = link['outwardIssue']['key'].split("-")
+            action = link['type']['outward']
+        else:
+            continue
+
+        if importing_project_key == project_key:
+            richtext += "  * This item {} #{}\n".format(action, issue_key)
+        else:
+            url = importer._client.server + "/projects/{}/issues/{}-{}".format(
+                project_key,
+                project_key,
+                issue_key
+            )
+            richtext += "  * This item {} [{}-{}]({})\n".format(action, project_key, issue_key, url)
+
+    for link in links:
+        if "object" in link:
+            richtext += "  * [{}]({})\n".format(
+                link['object']['title'] or link['object']['url'],
+                link['object']['url'],
+            )
+
+    return richtext
+
+
 class JiraClient:
     def __init__(self, server, oauth):
         self.server = server
@@ -110,6 +144,9 @@ class JiraClient:
 
         return response.content
 
+    def get_issue_url(self, key):
+        (project_key, issue_key) = key.split("-")
+        return self.server + "/projects/{}/issues/{}".format(project_key, key)
 
 
 class JiraImporterCommon:
@@ -214,6 +251,13 @@ class JiraImporterCommon:
                 order=1,
                 project=project
             )
+            model.objects.create(
+                name="Links",
+                description="Links",
+                type="richtext",
+                order=1,
+                project=project
+            )
         custom_fields.append({
             "history_name": "duedate",
             "jira_field_name": "duedate",
@@ -223,13 +267,13 @@ class JiraImporterCommon:
             "history_name": "priority",
             "jira_field_name": "priority",
             "taiga_field_name": "Priority",
-            "transform": lambda obj: obj.get('name', None)
+            "transform": lambda issue, obj: obj.get('name', None)
         })
         custom_fields.append({
             "history_name": "resolution",
             "jira_field_name": "resolution",
             "taiga_field_name": "Resolution",
-            "transform": lambda obj: obj.get('name', None)
+            "transform": lambda issue, obj: obj.get('name', None)
         })
         custom_fields.append({
             "history_name": "Resolution date",
@@ -245,19 +289,25 @@ class JiraImporterCommon:
             "history_name": "Component",
             "jira_field_name": "components",
             "taiga_field_name": "Components",
-            "transform": lambda obj: ", ".join([c.get('name', None) for c in obj])
+            "transform": lambda issue, obj: ", ".join([c.get('name', None) for c in obj])
         })
         custom_fields.append({
             "history_name": "Version",
             "jira_field_name": "versions",
             "taiga_field_name": "Affects Version/s",
-            "transform": lambda obj: ", ".join([c.get('name', None) for c in obj])
+            "transform": lambda issue, obj: ", ".join([c.get('name', None) for c in obj])
         })
         custom_fields.append({
             "history_name": "Fix Version",
             "jira_field_name": "fixVersions",
             "taiga_field_name": "Fix Version/s",
-            "transform": lambda obj: ", ".join([c.get('name', None) for c in obj])
+            "transform": lambda issue, obj: ", ".join([c.get('name', None) for c in obj])
+        })
+        custom_fields.append({
+            "history_name": "Link",
+            "jira_field_name": "issuelinks",
+            "taiga_field_name": "Links",
+            "transform": lambda issue, obj: links_to_richtext(self, issue, obj)
         })
 
         greenhopper_fields = {}
@@ -331,9 +381,11 @@ class JiraImporterCommon:
 
         custom_attributes_values = {}
         for custom_field in self.custom_fields:
+            if issue['key'] == "PS-10":
+                import pprint; pprint.pprint(issue['fields'])
             data = issue['fields'].get(custom_field['jira_field_name'], None)
             if data and "transform" in custom_field:
-                data = custom_field['transform'](data)
+                data = custom_field['transform'](issue, data)
 
             if data:
                 taiga_field = custom_att_manager.get(name=custom_field['taiga_field_name'])

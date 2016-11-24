@@ -147,8 +147,6 @@ class JiraAgileImporter(JiraImporterCommon):
 
     def _import_user_stories_data(self, project_id, project, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = project.userstorycustomattributes.get(name="Due date")
-        priority_field = project.userstorycustomattributes.get(name="Priority")
         project_conf = self._client.get_agile("/board/{}/configuration".format(project_id))
         if options['type'] == "scrum":
             estimation_field = project_conf['estimation']['field']['fieldId']
@@ -163,12 +161,13 @@ class JiraAgileImporter(JiraImporterCommon):
             offset += issues['maxResults']
 
             for issue in issues['issues']:
+                issue['fields']['issuelinks'] += self._client.get("/issue/{}/remotelink".format(issue['key']))
                 assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                 owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
                 external_reference = None
                 if options.get('keep_external_reference', False):
-                    external_reference = ["jira", issue['fields']['url']]
+                    external_reference = ["jira", self._client.get_issue_url(issue['key'])]
 
                 try:
                     milestone = project.milestones.get(name=issue['fields'].get('sprint', {}).get('name', ''))
@@ -250,12 +249,13 @@ class JiraAgileImporter(JiraImporterCommon):
             offset += issues['maxResults']
 
             for issue in issues['issues']:
+                issue['fields']['issuelinks'] += self._client.get("/issue/{}/remotelink".format(issue['key']))
                 assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                 owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
                 external_reference = None
                 if options.get('keep_external_reference', False):
-                    external_reference = ["jira", issue['fields']['url']]
+                    external_reference = ["jira", self._client.get_issue_url(issue['key'])]
 
                 task = Task.objects.create(
                     user_story=us,
@@ -290,8 +290,6 @@ class JiraAgileImporter(JiraImporterCommon):
 
     def _import_epics_data(self, project_id, project, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = project.epiccustomattributes.get(name="Due date")
-        priority_field = project.epiccustomattributes.get(name="Priority")
 
         counter = 0
         offset = 0
@@ -303,12 +301,13 @@ class JiraAgileImporter(JiraImporterCommon):
 
             for epic in issues['values']:
                 issue = self._client.get_agile("/issue/{}".format(epic['key']))
+                issue['fields']['issuelinks'] += self._client.get("/issue/{}/remotelink".format(issue['key']))
                 assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                 owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
                 external_reference = None
                 if options.get('keep_external_reference', False):
-                    external_reference = ["jira", issue['fields']['url']]
+                    external_reference = ["jira", self._client.get_issue_url(issue['key'])]
 
                 epic = Epic.objects.create(
                     project=project,

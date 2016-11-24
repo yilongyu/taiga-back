@@ -67,10 +67,11 @@ class Command(BaseCommand):
             with open(settings.JIRA_CERT_FILE, 'r') as key_cert_file:
                 key_cert_data = key_cert_file.read()
 
-            (rtoken, rtoken_secret, url) = JiraNormalImporter.get_auth_url(server, "tribe-consumer", key_cert_data, True)
+            (rtoken, rtoken_secret, url) = JiraNormalImporter.get_auth_url(server, settings.JIRA_CONSUMER_KEY, key_cert_data, True)
             print(url)
             code = input("Go to the url and get back the code")
-            token = JiraNormalImporter.get_access_token(server, "tribe-consumer", key_cert_data, rtoken, rtoken_secret, True)
+            token = JiraNormalImporter.get_access_token(server, settings.JIRA_CONSUMER_KEY, key_cert_data, rtoken, rtoken_secret, True)
+            print("Auth token: {}".format(json.dumps(token)))
 
 
         if options.get('project_type', None) is None:

@@ -182,6 +182,7 @@ class JiraNormalImporter(JiraImporterCommon):
                 offset += issues['maxResults']
 
                 for issue in issues['issues']:
+                    issue['fields']['issuelinks'] += self._client.get("/issue/{}/remotelink".format(issue['key']))
                     assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                     owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
@@ -239,8 +240,6 @@ class JiraNormalImporter(JiraImporterCommon):
 
     def _import_subtasks(self, project_id, project, us, issue, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = project.taskcustomattributes.get(name="Due date")
-        priority_field = project.taskcustomattributes.get(name="Priority")
 
         if len(issue['fields']['subtasks']) == 0:
             return
@@ -257,6 +256,7 @@ class JiraNormalImporter(JiraImporterCommon):
             offset += issues['maxResults']
 
             for issue in issues['issues']:
+                issue['fields']['issuelinks'] += self._client.get("/issue/{}/remotelink".format(issue['key']))
                 assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                 owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
@@ -296,8 +296,6 @@ class JiraNormalImporter(JiraImporterCommon):
 
     def _import_issues_data(self, project_id, project, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = project.issuecustomattributes.get(name="Due date")
-        priority_field = project.issuecustomattributes.get(name="Priority")
 
         types = options.get('types_bindings', {}).get("issue", [])
         for issue_type in types:
@@ -313,6 +311,7 @@ class JiraNormalImporter(JiraImporterCommon):
                 offset += issues['maxResults']
 
                 for issue in issues['issues']:
+                    issue['fields']['issuelinks'] += self._client.get("/issue/{}/remotelink".format(issue['key']))
                     assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                     owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
@@ -352,8 +351,6 @@ class JiraNormalImporter(JiraImporterCommon):
 
     def _import_epics_data(self, project_id, project, options):
         users_bindings = options.get('users_bindings', {})
-        due_date_field = project.epiccustomattributes.get(name="Due date")
-        priority_field = project.epiccustomattributes.get(name="Priority")
 
         types = options.get('types_bindings', {}).get("epic", [])
         for issue_type in types:
@@ -369,6 +366,7 @@ class JiraNormalImporter(JiraImporterCommon):
                 offset += issues['maxResults']
 
                 for issue in issues['issues']:
+                    issue['fields']['issuelinks'] += self._client.get("/issue/{}/remotelink".format(issue['key']))
                     assigned_to = users_bindings.get(issue['fields']['assignee']['key'] if issue['fields']['assignee'] else None, None)
                     owner = users_bindings.get(issue['fields']['creator']['key'] if issue['fields']['creator'] else None, self._user)
 
