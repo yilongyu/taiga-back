@@ -19,6 +19,8 @@ from taiga.projects.history.models import HistoryEntry
 from taiga.projects.history.choices import HistoryType
 from taiga.projects.custom_attributes.models import UserStoryCustomAttribute
 from taiga.mdrender.service import render as mdrender
+from taiga.timeline.rebuilder import rebuild_timeline
+from taiga.timeline.models import Timeline
 
 
 class TrelloClient:
@@ -89,6 +91,8 @@ class TrelloImporter:
         project = self._import_project_data(data, options)
         self._import_user_stories_data(data, project, options)
         self._cleanup(project, options)
+        Timeline.objects.filter(project=project).delete()
+        rebuild_timeline(None, None, project.id)
 
     def _import_project_data(self, data, options):
         board = data

@@ -20,6 +20,8 @@ from taiga.projects.history.models import HistoryEntry
 from taiga.projects.history.choices import HistoryType
 from taiga.projects.custom_attributes.models import UserStoryCustomAttribute
 from taiga.mdrender.service import render as mdrender
+from taiga.timeline.rebuilder import rebuild_timeline
+from taiga.timeline.models import Timeline
 
 
 class PivotalClient:
@@ -72,6 +74,8 @@ class PivotalImporter:
         (project, project_data) = self._import_project_data(project_id, options)
         self._import_epics_data(project_data, project, options)
         self._import_user_stories_data(project_data, project, options)
+        Timeline.objects.filter(project=project).delete()
+        rebuild_timeline(None, None, project.id)
         recalc_reference_counter(project)
 
     def _import_project_data(self, project_id, options):

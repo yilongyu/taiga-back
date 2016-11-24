@@ -15,6 +15,8 @@ from taiga.projects.history.services import (make_diff_from_dicts,
                                              FrozenDiff)
 from taiga.projects.history.models import HistoryEntry
 from taiga.projects.history.choices import HistoryType
+from taiga.timeline.rebuilder import rebuild_timeline
+from taiga.timeline.models import Timeline
 from taiga.users.models import User, AuthData
 
 
@@ -88,6 +90,8 @@ class GithubImporter:
             self._import_issues_data(project, repo, options)
         self._import_comments(project, repo, options)
         self._import_history(project, repo, options)
+        Timeline.objects.filter(project=project).delete()
+        rebuild_timeline(None, None, project.id)
         recalc_reference_counter(project)
 
     def _import_project_data(self, repo, options):
@@ -193,6 +197,8 @@ class GithubImporter:
         while True:
             issues = self._client.get("/repos/{}/issues".format(repo['full_name']), {
                 "state": "all",
+                "sort": "created",
+                "direction": "asc",
                 "page": page,
                 "per_page": 100
             })
@@ -253,6 +259,8 @@ class GithubImporter:
         while True:
             issues = self._client.get("/repos/{}/issues".format(repo['full_name']), {
                 "state": "all",
+                "sort": "created",
+                "direction": "asc",
                 "page": page,
                 "per_page": 100
             })

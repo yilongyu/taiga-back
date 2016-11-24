@@ -12,6 +12,8 @@ from taiga.projects.history.services import take_snapshot
 from taiga.projects.history.models import HistoryEntry
 from taiga.projects.custom_attributes.models import UserStoryCustomAttribute, TaskCustomAttribute
 from taiga.users.models import User
+from taiga.timeline.rebuilder import rebuild_timeline
+from taiga.timeline.models import Timeline
 
 
 class AsanaImporter:
@@ -54,6 +56,8 @@ class AsanaImporter:
         project = self._client.projects.find_by_id(project_id)
         taiga_project = self._import_project_data(project, options)
         self._import_user_stories_data(taiga_project, project, options)
+        Timeline.objects.filter(project=project).delete()
+        rebuild_timeline(None, None, project.id)
 
     def _import_project_data(self, project, options):
         users_bindings = options.get('users_bindings', {})

@@ -8,6 +8,8 @@ from taiga.projects.tasks.models import Task
 from taiga.projects.milestones.models import Milestone
 from taiga.projects.epics.models import Epic, RelatedUserStory
 from taiga.projects.history.services import take_snapshot
+from taiga.timeline.rebuilder import rebuild_timeline
+from taiga.timeline.models import Timeline
 from .common import JiraImporterCommon
 
 
@@ -20,6 +22,8 @@ class JiraAgileImporter(JiraImporterCommon):
         self._import_epics_data(project_id, project, options)
         self._import_user_stories_data(project_id, project, options)
         self._cleanup(project, options)
+        Timeline.objects.filter(project=project).delete()
+        rebuild_timeline(None, None, project.id)
         recalc_reference_counter(project)
 
     def _import_project_data(self, project_id, options):
