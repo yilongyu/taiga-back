@@ -203,7 +203,6 @@ class TrelloImporter:
 
             external_reference = None
             if options.get('keep_external_reference', False):
-                import pprint; pprint.pprint(card)
                 external_reference = ["trello", card['url']]
 
             us = UserStory.objects.create(

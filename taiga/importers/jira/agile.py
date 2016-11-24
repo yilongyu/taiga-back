@@ -1,16 +1,13 @@
 import datetime
 
 from django.template.defaultfilters import slugify
+from taiga.projects.references.models import recalc_reference_counter
 from taiga.projects.models import Project, ProjectTemplate, Points
 from taiga.projects.userstories.models import UserStory, RolePoints
 from taiga.projects.tasks.models import Task
 from taiga.projects.milestones.models import Milestone
 from taiga.projects.epics.models import Epic, RelatedUserStory
 from taiga.projects.history.services import take_snapshot
-from taiga.projects.custom_attributes.models import (UserStoryCustomAttribute,
-                                                     TaskCustomAttribute,
-                                                     IssueCustomAttribute,
-                                                     EpicCustomAttribute)
 from .common import JiraImporterCommon
 
 
@@ -23,6 +20,7 @@ class JiraAgileImporter(JiraImporterCommon):
         self._import_epics_data(project_id, project, options)
         self._import_user_stories_data(project_id, project, options)
         self._cleanup(project, options)
+        recalc_reference_counter(project)
 
     def _import_project_data(self, project_id, options):
         project = self._client.get_agile("/board/{}".format(project_id))

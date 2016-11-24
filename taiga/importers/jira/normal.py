@@ -1,33 +1,14 @@
-import requests
-import json
-from urllib.parse import parse_qsl
-from oauthlib.oauth1 import SIGNATURE_RSA
-
 from collections import OrderedDict
-from requests_oauthlib import OAuth1
-from django.conf import settings
-from django.core.files.base import ContentFile
-from django.contrib.contenttypes.models import ContentType
 
 from django.template.defaultfilters import slugify
-from taiga.users.models import User
+from taiga.projects.references.models import recalc_reference_counter
 from taiga.projects.models import Project, ProjectTemplate, Membership, Points
 from taiga.projects.userstories.models import UserStory, RolePoints
 from taiga.projects.tasks.models import Task
 from taiga.projects.issues.models import Issue
-from taiga.projects.milestones.models import Milestone
 from taiga.projects.epics.models import Epic, RelatedUserStory
-from taiga.projects.attachments.models import Attachment
 from taiga.projects.history.services import take_snapshot
-from taiga.projects.history.services import (make_diff_from_dicts,
-                                             make_diff_values,
-                                             make_key_from_model_object,
-                                             get_typename_for_model_class,
-                                             FrozenDiff)
-from taiga.projects.history.models import HistoryEntry
-from taiga.projects.history.choices import HistoryType
-from taiga.mdrender.service import render as mdrender
-from .common import JiraImporterCommon, EPIC_COLORS
+from .common import JiraImporterCommon
 
 
 class JiraNormalImporter(JiraImporterCommon):
@@ -45,6 +26,7 @@ class JiraNormalImporter(JiraImporterCommon):
         self._link_epics_with_user_stories(project_id, project, options)
         self._import_issues_data(project_id, project, options)
         self._cleanup(project, options)
+        recalc_reference_counter(project)
 
     def _import_project_data(self, project_id, options):
         project = self._client.get("/project/{}".format(project_id))

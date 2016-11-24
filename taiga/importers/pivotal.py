@@ -1,10 +1,9 @@
-from requests_oauthlib import OAuth1Session, OAuth1
 from django.core.files.base import ContentFile
 from django.contrib.contenttypes.models import ContentType
 import requests
-import datetime
 
 from taiga.users.models import User
+from taiga.projects.references.models import recalc_reference_counter
 from taiga.projects.models import Project, ProjectTemplate, Membership, Points
 from taiga.projects.userstories.models import UserStory, RolePoints
 from taiga.projects.tasks.models import Task
@@ -73,6 +72,7 @@ class PivotalImporter:
         (project, project_data) = self._import_project_data(project_id, options)
         self._import_epics_data(project_data, project, options)
         self._import_user_stories_data(project_data, project, options)
+        recalc_reference_counter(project)
 
     def _import_project_data(self, project_id, options):
         project_data = self._client.get(

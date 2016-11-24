@@ -1,7 +1,5 @@
 import requests
 from urllib.parse import parse_qsl
-from github import Github
-from itertools import chain
 from django.core.files.base import ContentFile
 
 from taiga.projects.models import Project, ProjectTemplate, Membership
@@ -18,7 +16,6 @@ from taiga.projects.history.services import (make_diff_from_dicts,
 from taiga.projects.history.models import HistoryEntry
 from taiga.projects.history.choices import HistoryType
 from taiga.users.models import User, AuthData
-from taiga.mdrender.service import render as mdrender
 
 
 class GithubClient:
@@ -91,7 +88,7 @@ class GithubImporter:
             self._import_issues_data(project, repo, options)
         self._import_comments(project, repo, options)
         self._import_history(project, repo, options)
-        # recalc_reference_counter(project)
+        recalc_reference_counter(project)
 
     def _import_project_data(self, repo, options):
         users_bindings = options.get('users_bindings', {})
